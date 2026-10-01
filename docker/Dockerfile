@@ -24,9 +24,7 @@ RUN apt-get update \
     && python -m pip install --no-cache-dir -r requirements.txt \
     && apt-get purge -y --auto-remove build-essential \
     && rm -rf /var/lib/apt/lists/* \
-    && python -c "import sys, site; print('PATH-CHECK'); print('exe', sys.executable); print('prefix', sys.prefix); print('path', sys.path); print('sitepkgs', site.getsitepackages()); print('usersite', site.getusersitepackages())" \
-    && (python -m pip show kurigram || true) \
-    && (ls -d /usr/local/lib/python3.12/site-packages/* 2>/dev/null | head -20 || true)
+    && python -c "import pyrogram, tgcrypto, httpx; print('deps ok')"
 
 COPY pyproject.toml ./
 COPY src/ ./src/
@@ -40,10 +38,9 @@ COPY scripts/ ./scripts/
 # absent. The worker then dies on startup in a restart loop. This is the check
 # that would have caught it, and it costs nothing.
 RUN python -c "import sys; print('interpreter:', sys.executable)" \
-    && python -c "import kurigram, tgcrypto, httpx; print('deps ok')" \
     && pip install --no-cache-dir --no-deps -e . \
     && python -c "import arr_uploader.cli, arr_uploader.worker, arr_uploader.torbox" \
-    && python -c "import kurigram; print('kurigram visible to the runtime interpreter')" \
+    && python -c "import pyrogram; print('pyrogram visible to the runtime interpreter')" \
     && mkdir -p /srv/arr/state/uploader/inbox \
     && arr-uploader --help > /dev/null
 

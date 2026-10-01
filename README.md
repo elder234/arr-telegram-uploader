@@ -247,7 +247,7 @@ python _devtools/run_tests.py            # all
 python _devtools/run_tests.py partition  # one module
 ```
 
-288 tests. `pytest` is used when installed; `_devtools/` provides a small shim and
+289 tests. `pytest` is used when installed; `_devtools/` provides a small shim and
 runner so the suite also runs with no package index available.
 
 Coverage includes the negative cases that matter most: verification failure must

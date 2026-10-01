@@ -1,12 +1,14 @@
-"""Tests for the Kurigram client wrapper's construction.
+"""Tests for the client wrapper's construction.
 
-Kurigram is not installed here, so these assert on the arguments we hand it
-rather than on a live connection. Two mistakes are guarded against:
+The Telegram library is not installed here, so these assert on the arguments we
+hand it rather than on a live connection. Three mistakes are guarded against:
 
 * Passing a session *string* as ``name`` makes the library treat a base64 blob as
   a filename and try to persist it. A string session needs ``session_string``.
-* The workdir must exist before Kurigram writes there, otherwise a fresh install
-  fails at startup.
+* The workdir must exist before the library writes there, otherwise a fresh
+  install fails at startup.
+* The import name. The distribution is ``kurigram`` but the module is
+  ``pyrogram``; the fake is registered under the real name for that reason.
 """
 
 from __future__ import annotations
@@ -19,7 +21,7 @@ from arr_uploader.telegram.client import TelegramClient
 
 
 class _Recorder:
-    """Stands in for kurigram.Client, recording its constructor kwargs."""
+    """Stands in for pyrogram.Client, recording its constructor kwargs."""
 
     def __init__(self, **kwargs) -> None:
         self.kwargs = kwargs
@@ -45,7 +47,14 @@ class _Recorder:
 
 
 def install_fake_kurigram(monkeypatch=None):
-    """Register a fake ``kurigram`` module exposing our recorder as Client."""
+    """Register a fake ``pyrogram`` module exposing our recorder as Client.
+
+    Registered as ``pyrogram``, not ``kurigram``, and that detail is the whole
+    point. The distribution on PyPI is named kurigram, but it is a Pyrogram fork
+    that installs a pyrogram/ package, so the import name is pyrogram. Faking
+    ``kurigram`` here let a test suite pass for months against an import that
+    could never resolve in production -- the fake agreed with the bug.
+    """
     created: list[_Recorder] = []
 
     def factory(**kwargs):
@@ -53,19 +62,36 @@ def install_fake_kurigram(monkeypatch=None):
         created.append(rec)
         return rec
 
-    module = types.ModuleType("kurigram")
+    module = types.ModuleType("pyrogram")
     module.Client = factory
 
-    previous = sys.modules.get("kurigram")
-    sys.modules["kurigram"] = module
+    previous = sys.modules.get("pyrogram")
+    sys.modules["pyrogram"] = module
 
     def restore():
         if previous is None:
-            sys.modules.pop("kurigram", None)
+            sys.modules.pop("pyrogram", None)
         else:
-            sys.modules["kurigram"] = previous
+            sys.modules["pyrogram"] = previous
 
     return created, restore
+
+
+def test_fake_is_registered_under_the_real_import_name():
+    """Guards the fake itself.
+
+    If this helper ever goes back to faking ``kurigram``, the suite stops
+    exercising the real import path and green tests mean nothing again.
+    """
+    created, restore = install_fake_kurigram()
+    try:
+        assert "pyrogram" in sys.modules, "the fake must be importable as pyrogram"
+        import importlib
+
+        assert importlib.import_module("pyrogram").Client is not None
+    finally:
+        restore()
+        assert created == []
 
 
 def run(coro):

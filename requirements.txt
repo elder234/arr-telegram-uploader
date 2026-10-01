@@ -6,5 +6,11 @@ tgcrypto>=1.2.5
 # Optional intake transports. httpx is required by the Telegram client too.
 httpx>=0.27.0
 
+# NOTE: kurigram is the *distribution* name on PyPI, but it installs a pyrogram
+# package -- it is a maintained fork of Pyrogram that keeps the original import
+# name. Code must `from pyrogram import Client`, never `from kurigram import ...`.
+# Both requirements.txt and pyproject.toml pin the distribution; the Dockerfile
+# asserts `import pyrogram` so this cannot drift again silently.
+
 # Progress/observability are stdlib-only; natsort is intentionally NOT a
 # dependency because part ordering is handled by zero-padded naming in naming.py.

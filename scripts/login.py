@@ -30,12 +30,15 @@ ENV_PATH = Path(".env")
 
 async def _login(api_id: int, api_hash: str, session_file: str | None) -> str:
     try:
-        from kurigram import Client
+        # pyrogram, not kurigram: the distribution is named kurigram but it
+        # installs a pyrogram package. See telegram/client.py.
+        from pyrogram import Client
     except ImportError:
-        print("kurigram is not installed. Try:", file=sys.stderr)
+        print("the pyrogram module is not installed. Try:", file=sys.stderr)
         print("  pip install -r requirements.txt", file=sys.stderr)
         print("or install it directly:", file=sys.stderr)
         print("  pip install kurigram tgcrypto", file=sys.stderr)
+        print("(kurigram is the distribution name; the import name is pyrogram)", file=sys.stderr)
         raise SystemExit(2) from None
 
     kwargs: dict[str, object] = {"api_id": api_id, "api_hash": api_hash}

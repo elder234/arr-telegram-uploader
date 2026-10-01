@@ -49,10 +49,17 @@ class TelegramClient:
                 return
 
             try:
-                from kurigram import Client
+                # Imported as pyrogram, not kurigram. The distribution on PyPI
+                # is called "kurigram", but it is a fork of Pyrogram that keeps
+                # the original import name -- the wheel contains a pyrogram/
+                # directory and no kurigram/ one. `from kurigram import Client`
+                # raises ImportError even on a correctly installed image, which
+                # is what the worker reported as "kurigram is not installed".
+                from pyrogram import Client
             except ImportError as exc:  # pragma: no cover - dependency missing
                 raise TelegramUnavailable(
-                    "kurigram is not installed; run 'pip install -r requirements.txt'"
+                    "the pyrogram module is not installed; run 'pip install -r requirements.txt' "
+                    "(kurigram is the distribution name, pyrogram is the import name)"
                 ) from exc
 
             session_string = (self.config.session_string or "").strip()

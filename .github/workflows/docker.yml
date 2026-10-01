@@ -78,9 +78,9 @@ jobs:
           image=$(echo '${{ steps.meta.outputs.tags }}' | head -n1)
           docker run --rm --entrypoint python "$image" -c "
           import sys
-          import kurigram, tgcrypto, httpx
+          import pyrogram, tgcrypto, httpx
           print('python', sys.version.split()[0])
-          print('kurigram', getattr(kurigram, '__version__', 'unknown'))
+          print('pyrogram', getattr(pyrogram, '__version__', 'unknown'))
           print('tgcrypto ok')
           print('httpx', httpx.__version__)
           " || {
