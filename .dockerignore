@@ -1,0 +1,18 @@
+# Local configuration. May contain TELEGRAM_SESSION_STRING and RADARR_API_KEY.
+.env
+
+# Session files grant full Telegram account access.
+*.session
+*.session-journal
+
+# Upload queue, part ledger, and event log.
+*.db
+*.db-wal
+*.db-shm
+uploader.db*
+
+# Transient intake files written by Radarr.
+inbox/
+
+# Movies whose deletion could not be proven. Keep these locally.
+quarantine/

@@ -1,0 +1,30 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "arr-telegram-uploader"
+version = "0.1.0"
+description = "Reliable Radarr -> TorBox -> Telegram uploader with verified-upload deletion"
+requires-python = ">=3.11"
+dependencies = [
+    "kurigram>=2.2.7",
+    "tgcrypto>=1.2.5",
+    "httpx>=0.27.0",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=8.0"]
+
+[project.scripts]
+arr-uploader = "arr_uploader.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+arr_uploader = ["db/*.sql"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["src"]

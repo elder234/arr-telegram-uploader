@@ -1,0 +1,75 @@
+# Reliable Radarr -> TorBox -> Telegram uploader.
+#
+# Paths are identical inside every container so hardlinks and path arithmetic
+# behave the same everywhere: /data is the Arr data root, /srv/arr/state is
+# uploader state.
+
+name: arr-uploader
+
+services:
+  uploader:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile
+    image: arr-telegram-uploader:latest
+    container_name: arr-uploader
+    restart: unless-stopped
+
+    environment:
+      TELEGRAM_API_ID: "${TELEGRAM_API_ID:?set TELEGRAM_API_ID}"
+      TELEGRAM_API_HASH: "${TELEGRAM_API_HASH:?set TELEGRAM_API_HASH}"
+      TELEGRAM_CHAT_ID: "${TELEGRAM_CHAT_ID:?set TELEGRAM_CHAT_ID}"
+      TELEGRAM_SESSION_STRING: "${TELEGRAM_SESSION_STRING:-}"
+      TELEGRAM_THREAD_ID: "${TELEGRAM_THREAD_ID:-}"
+      TELEGRAM_PART_CEILING_MB: "${TELEGRAM_PART_CEILING_MB:-auto}"
+      MEDIA_ROOT: /data/media
+      STATE_DIR: /srv/arr/state/uploader
+      INBOX_DIR: /srv/arr/state/uploader/inbox
+      RADARR_URL: http://radarr:7878
+      RADARR_API_KEY: "${RADARR_API_KEY:-}"
+      LOG_LEVEL: "${LOG_LEVEL:-INFO}"
+
+    volumes:
+      # The Arr data root: uploads reads the library and removes a movie folder
+      # only after a verified upload.
+      - /srv/arr/data:/data
+      # Uploader state: queue database, Telegram session, quarantine.
+      - /srv/arr/state/uploader:/srv/arr/state/uploader
+
+    # Upload bandwidth, not disk, is the constraint.
+    stop_grace_period: 5m
+    healthcheck:
+      test: ["CMD", "arr-uploader", "check"]
+      interval: 60s
+      timeout: 10s
+      retries: 3
+
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  # --- Example download client -------------------------------------------
+  # TorBox via the qBittorrent-compatible bridge. Radarr connects to this on
+  # 8080 as if it were qBittorrent. Pull-based, so nothing is mounted.
+  #
+  # torbox-client:
+  #   image: ghcr.io/devblaze/torbox-client:latest
+  #   container_name: torbox-client
+  #   restart: unless-stopped
+  #   environment:
+  #     TORBOX_API_KEY: "${TORBOX_API_KEY:?set TORBOX_API_KEY}"
+  #   ports:
+  #     - "8080:8080"
+  #   volumes:
+  #     - /srv/arr/data/downloads:/data
+
+  # --- Example Radarr Custom Script wiring --------------------------------
+  # Mount this file into Radarr and point a Custom Script at it:
+  #   python3 /scripts/radarr_hook.py /srv/arr/state/uploader/inbox
+  #
+  # Radarr's Import and Rename events fire after the file is in place, which is
+  # when we want to enqueue. The hook only writes a JSON file, so if the
+  # uploader is down, Radarr's import still succeeds and the reconciler picks
+  # the movie up later.

@@ -1,0 +1,19 @@
+# Normalise line endings so the repo stays clean on Windows checkouts and the
+# Dockerfile receives LF. Without this, .gitattributes and .gitignore disagree
+# about what a text file is and files show as modified after every checkout.
+* text=auto eol=lf
+
+*.py text eol=lf
+*.toml text eol=lf
+*.sql text eol=lf
+*.yml text eol=lf
+*.yaml text eol=lf
+*.md text eol=lf
+*.sh text eol=lf
+
+# Windows and editor cruft that must never be normalised.
+*.png binary
+*.jpg binary
+*.ico binary
+*.session binary
+*.db binary

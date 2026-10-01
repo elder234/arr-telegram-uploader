@@ -1,0 +1,88 @@
+# Runtime configuration. Environment variables (see .env.example) override these.
+# All paths are container paths; see docker/docker-compose.yml for the host mounts.
+
+[paths]
+# Root of the Radarr media library. Every job folder must resolve under this.
+media_root = "/data/media"
+# State directory. Must NOT be inside media_root.
+state_dir = "/srv/arr/state/uploader"
+# Radarr's webhook / Custom Script inbox.
+inbox_dir = "/srv/arr/state/uploader/inbox"
+
+[telegram]
+api_id = 0
+api_hash = ""
+# Kurigram session string, or leave empty to persist a session file.
+session_string = ""
+session_file = "/srv/arr/state/uploader/uploader.session"
+chat_id = 0
+thread_id = 0
+# auto = probe the account for Premium (3800 MiB) else 1900 MiB.
+# Can be pinned with an integer in MiB, or `disabled` to use the bot API ceiling.
+part_ceiling_mb = "auto"
+# Verify the server-reported document size on every upload.
+verify_size = true
+
+[naming]
+# Tokens: {basename} = movie file stem, {index} = 1-based part number,
+#         {ext} = original extension, {year} = movie year, {title} = title.
+template = "{basename}{ext}{part}"
+part_index_width = 3
+max_length = 240
+# Sidecar subtitles are uploaded separately, not concatenated into the video parts.
+upload_subtitles = true
+
+[uploader]
+# Concurrent jobs. Kept at 1: parallel uploads split the same uplink and
+# provokes FloodWait without increasing throughput.
+max_concurrent_jobs = 1
+poll_interval_seconds = 5
+# Wait for folder size+mtime to hold steady before touching a movie.
+stability_seconds = 30
+# Exponential retry: delay = min(backoff_base * 2**(attempts-1), backoff_cap).
+max_attempts = 8
+backoff_base_seconds = 30
+backoff_cap_seconds = 3600
+# Stop transmission mid-upload when shutdown is requested.
+drain_on_shutdown = true
+
+[download]
+# TorBox free tier is bandwidth-throttled. Sequential is the safe default.
+concurrency = 1
+
+[deletion]
+enabled = true
+# Hard gate. Local files are only removed after every part is uploaded AND
+# size-verified. Anything suspicious goes to quarantine_dir instead of rmtree.
+verify_size_before_delete = true
+require_stability_before_delete = true
+quarantine_dir = "/srv/arr/state/uploader/quarantine"
+
+[radarr]
+url = "http://radarr:7878"
+api_key = ""
+# Set the movie to monitored=false and add an import exclusion after a
+# successful upload so Radarr does not grab it again.
+unmonitor_after_upload = true
+exclude_after_upload = true
+timeout_seconds = 15
+
+[reconciler]
+# Safety net for jobs whose intake was lost. Conservative by design: it only
+# creates jobs for folders that are unknown to the database and are old enough.
+enabled = true
+interval_seconds = 900
+min_age_seconds = 3600
+
+[webhook]
+enabled = false
+host = "0.0.0.0"
+port = 8099
+# Shared secret checked against the X-Uploader-Secret header.
+secret = ""
+
+[logging]
+level = "INFO"
+# JSON lines for log shipping; false uses human-readable console output.
+json = true
+file = ""
