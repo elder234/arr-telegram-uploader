@@ -45,6 +45,12 @@ class FakeClient:
     async def is_cached(self, http, info_hash):
         return []
 
+    async def cached_torrent_ids(self, http, info_hash):
+        return []
+
+    async def torrent_in_account(self, http, torrent_id, *, bypass_cache=True):
+        return False
+
     async def create_magnet(self, http, magnet):
         self.created.append(magnet)
         return 555

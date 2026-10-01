@@ -320,7 +320,55 @@ def test_submitted_magnet_is_renamed_so_restart_does_not_duplicate():
     asyncio.run(run())
 
 
-def test_cached_magnet_skips_create():
+def test_cached_torrent_in_account_is_adopted_without_creating():
+    """A hash TorBox already holds must not cost a create call.
+
+    Uncached creates are capped at 60/hour, so re-creating content the service
+    already has wastes budget and adds a duplicate to the account. Adoption also
+    binds the id, which is what lets poll() find and fetch it later.
+
+    This test previously asserted ``submitted == 1`` -- it encoded the bug it
+    was named for. It passed for months because it was checking the wrong thing.
+    """
+
+    async def run():
+        with tempfile.TemporaryDirectory() as d:
+            watch = Path(d)
+            digest = bytes(range(20))
+            magnet = "magnet:?xt=urn:btih:%s" % base64.b32encode(digest).decode()
+            src = watch / "a.magnet"
+            src.write_text(magnet, encoding="utf-8")
+
+            # checkcached -> id 8; mylist(id=8) -> it is ours. No create follows.
+            http = FakeHTTP(
+                [
+                    ok([{"id": 8, "name": "Movie", "hash": "h"}]),
+                    ok({"torrents": [{"id": 8, "name": "Movie", "state": "cached"}]}),
+                ]
+            )
+            intake = _intake(Path(d), watch)
+            await intake.submit_all(http)
+
+            assert intake.stats.skipped_cached == 1
+            assert intake.stats.submitted == 0, "created a duplicate of a cached torrent"
+            assert not any("createtorrent" in call["url"] for call in http.calls), (
+                "an uncached create was issued for content TorBox already holds"
+            )
+            assert intake.journal.unfetched_ids() == {8}, "adopted id must be owned"
+            assert src.with_suffix(".magnet.submitted").exists()
+
+    asyncio.run(run())
+
+
+def test_cached_torrent_outside_our_account_is_created_anyway():
+    """TorBox's cache is shared, so a cached id is not necessarily ours.
+
+    Adopting one we do not own would be worse than creating: poll() only fetches
+    journal-bound ids, so the magnet would sit in the journal forever and the
+    file would silently never reach Telegram. When the candidate is not in our
+    mylist we create it instead.
+    """
+
     async def run():
         with tempfile.TemporaryDirectory() as d:
             watch = Path(d)
@@ -328,18 +376,49 @@ def test_cached_magnet_skips_create():
             magnet = "magnet:?xt=urn:btih:%s" % base64.b32encode(digest).decode()
             (watch / "a.magnet").write_text(magnet, encoding="utf-8")
 
-            # checkcached says we already have it, then the create still returns
-            # an id (cached creates are cheap), then poll returns nothing.
             http = FakeHTTP(
                 [
-                    ok([{"name": "Movie.mkv", "files": [{"name": "Movie.mkv"}]}]),
-                    ok({"torrent_id": 8}),
+                    ok([{"id": 8, "name": "Someone Else's Torrent"}]),
+                    ok({"torrents": []}),          # mylist(id=8): not ours
+                    ok({"torrent_id": 42}),        # create
                 ]
             )
             intake = _intake(Path(d), watch)
             await intake.submit_all(http)
-            assert intake.stats.skipped_cached == 1
+
             assert intake.stats.submitted == 1
+            assert intake.stats.skipped_cached == 0
+            assert intake.journal.unfetched_ids() == {42}, (
+                "must own the torrent we actually created"
+            )
+
+    asyncio.run(run())
+
+
+def test_checkcached_response_without_usable_ids_falls_back_to_create():
+    """The documented schema for checkcached is empty, so the shape is not trusted.
+
+    Anything that is not an integer id is ignored, and submission proceeds
+    normally rather than assuming a cache hit it cannot prove.
+    """
+
+    async def run():
+        with tempfile.TemporaryDirectory() as d:
+            watch = Path(d)
+            magnet = "magnet:?xt=urn:btih:" + "a" * 40
+            (watch / "a.magnet").write_text(magnet, encoding="utf-8")
+
+            http = FakeHTTP(
+                [
+                    ok([{"name": "no id here"}, {"id": "8"}, "nonsense"]),
+                    ok({"torrent_id": 42}),
+                ]
+            )
+            intake = _intake(Path(d), watch)
+            await intake.submit_all(http)
+
+            assert intake.stats.submitted == 1
+            assert intake.stats.skipped_cached == 0
 
     asyncio.run(run())
 

@@ -258,6 +258,44 @@ class TorboxClient:
 
     # ------------------------------------------------------------------ submit
 
+    async def cached_torrent_ids(self, client: Any, info_hash: str) -> list[int]:
+        """Ids TorBox reports as cached for this hash.
+
+        Checked before every submit because uncached creates are capped at
+        60/hour. The OpenAPI spec documents no response schema for
+        ``checkcached`` (``{}``), so this parses defensively and yields only ids
+        that are actually usable as integers rather than trusting the shape.
+
+        A cached id is only a *candidate*. TorBox's cache is broader than any one
+        account, so an id here is not proof the torrent is in ours -- see
+        ``TorboxIntake.submit``, which confirms against mylist before adopting.
+        """
+        data = await self._call(
+            client,
+            "GET",
+            "/torrents/checkcached",
+            params={"hash": info_hash, "format": "object"},
+        )
+        ids: list[int] = []
+        if isinstance(data, list):
+            for item in data:
+                torrent_id = item.get("id") if isinstance(item, dict) else None
+                if isinstance(torrent_id, int) and torrent_id not in ids:
+                    ids.append(torrent_id)
+        return ids
+
+    async def torrent_in_account(
+        self, client: Any, torrent_id: int, *, bypass_cache: bool = True
+    ) -> bool:
+        """Whether ``torrent_id`` is visible in our own mylist right now.
+
+        Always bypasses the 600s server-side mylist cache: this exists to
+        confirm a freshly created or freshly adopted torrent, and a cached
+        answer of "absent" would be worse than no answer.
+        """
+        found = await self.list_torrents(client, torrent_id=torrent_id, bypass_cache=bypass_cache)
+        return any(t.id == torrent_id for t in found)
+
     async def is_cached(self, client: Any, info_hash: str) -> list[str]:
         """Return file names TorBox already holds for this hash.
 
@@ -350,19 +388,22 @@ class TorboxClient:
         *,
         torrent_id: int | None = None,
         limit: int | None = None,
+        bypass_cache: bool | None = None,
     ) -> list[Torrent]:
         """List torrents, newest state first.
 
         ``bypass_cache`` is opt-in: the list is cached server-side for 600s, so
         requesting fresh state on every poll spends rate budget to read data that
-        is usually identical.
+        is usually identical. A per-call override exists for the cases where a
+        cached answer would be actively wrong -- confirming a torrent we just
+        submitted.
         """
         params: dict[str, Any] = {}
         if torrent_id is not None:
             params["id"] = torrent_id
         if limit is not None:
             params["limit"] = limit
-        if self.config.bypass_cache:
+        if bypass_cache or (bypass_cache is None and self.config.bypass_cache):
             params["bypass_cache"] = True
 
         data = await self._call(client, "GET", "/torrents/mylist", params=params or None)

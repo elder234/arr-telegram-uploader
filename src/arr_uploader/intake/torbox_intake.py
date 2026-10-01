@@ -280,15 +280,49 @@ class TorboxIntake:
             return
 
         if info_hash:
-            cached = await self.client.is_cached(http, info_hash)
-            if cached:
-                # Cached: TorBox already has it, so we can skip the create and the
-                # 60/hour uncached-create budget entirely.
+            # A cached hash means TorBox already holds the content, so we can
+            # avoid the create and the 60/hour uncached-create budget. But
+            # "cached" is not "in our account": the cache is shared, and adopting
+            # an id we do not own would leave the torrent unfetched forever,
+            # because poll() only considers journal-bound ids. So each candidate
+            # is confirmed against mylist before it is adopted.
+            for cached_id in await self.client.cached_torrent_ids(http, info_hash):
+                try:
+                    in_account = await self.client.torrent_in_account(http, cached_id)
+                except TorboxError as exc:
+                    LOG.warning(
+                        "cached torrent lookup failed, creating instead",
+                        extra={"id": cached_id, "detail": exc.detail},
+                    )
+                    break
+                if not in_account:
+                    LOG.info(
+                        "cached torrent is not in this account, creating instead",
+                        extra={"id": cached_id, "hash": info_hash},
+                    )
+                    break
+                # Adopt: bind the id so we own the download, then treat the
+                # magnet as submitted. No create call is made.
                 self.stats.skipped_cached += 1
                 LOG.info(
-                    "torbox already cached, skipping create",
-                    extra={"hash": info_hash, "files": len(cached)},
+                    "torbox already cached, adopting existing torrent",
+                    extra={"id": cached_id, "hash": info_hash},
                 )
+                self.journal.bind(
+                    cached_id,
+                    info_hash=info_hash,
+                    magnet=magnet,
+                    source=str(path),
+                    name=path.stem,
+                )
+                self._pending[info_hash] = PendingMagnet(
+                    info_hash=info_hash,
+                    magnet=magnet,
+                    torrent_id=cached_id,
+                    source=str(path),
+                )
+                self._mark_submitted(path)
+                return
 
         magnet_value = magnet
         files: dict[str, Any] | None = None
