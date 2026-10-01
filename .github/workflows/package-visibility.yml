@@ -16,17 +16,26 @@ jobs:
       - name: Make the container package public
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          OWNER: ${{ github.repository_owner }}
         run: |
-          set -euo pipefail
+          set -uo pipefail
+          endpoint="https://api.github.com/users/${OWNER}/packages/container/arr-telegram-uploader"
           for attempt in 1 2 3; do
-            status=$(gh api --silent -o /dev/null -w '%{http_code}' \
-              -X PATCH \
+            # curl rather than gh api: it prints the response body on failure,
+            # so a 403 says *why* rather than just "not 204".
+            code=$(curl -sS -o /tmp/body -w '%{http_code}' -X PATCH \
+              -H "Authorization: Bearer ${GH_TOKEN}" \
               -H "Accept: application/vnd.github+json" \
-              /users/${{ github.repository_owner }}/packages/container/arr-telegram-uploader \
-              -f visibility=public || true)
-            echo "attempt $attempt -> HTTP $status"
-            [ "$status" = "204" ] && exit 0
+              -H "X-GitHub-Api-Version: 2022-11-28" \
+              -d '{"visibility":"public"}' "$endpoint")
+            echo "attempt ${attempt} -> HTTP ${code}"
+            if [ "$code" = "204" ]; then
+              echo "package is public"
+              exit 0
+            fi
+            head -c 500 /tmp/body; echo
             sleep 10
           done
-          echo "could not change visibility; flip it in the package settings UI"
+          echo "::notice::Could not change visibility automatically. Set it in the"
+          echo "::notice::package settings UI: Settings > General > Danger Zone."
           exit 1
