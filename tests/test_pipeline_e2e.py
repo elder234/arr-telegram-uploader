@@ -109,6 +109,10 @@ def build_settings(tmp_path, **overrides) -> Settings:
     settings.radarr.api_key = ""
     settings.radarr.url = ""
 
+    # The compose healthcheck runs `arr-uploader check`, so the CLI must be able
+    # to load config and print without a live Telegram connection.
+    settings.telegram.session_string = "smoketest-session-string"
+
     # Keys are Python identifiers, e.g. "deletion.enabled", "telegram.chat_id".
     for key, value in overrides.items():
         target = settings
