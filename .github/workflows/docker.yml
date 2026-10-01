@@ -67,3 +67,24 @@ jobs:
             docker run --rm "$image" --help
             exit 1
           }
+
+      - name: Verify runtime dependencies inside the image
+        # `check` never imports kurigram: cli.py imports Telegram lazily, so a
+        # published image could be missing the MTProto library entirely and this
+        # job would still pass. The worker then crash-loops on the user's server
+        # with "kurigram is not installed". Import it here, from the venv that
+        # actually runs, and report what is installed when it fails.
+        run: |
+          image=$(echo '${{ steps.meta.outputs.tags }}' | head -n1)
+          docker run --rm --entrypoint python "$image" -c "
+          import sys
+          import kurigram, tgcrypto, httpx
+          print('python', sys.version.split()[0])
+          print('kurigram', getattr(kurigram, '__version__', 'unknown'))
+          print('tgcrypto ok')
+          print('httpx', httpx.__version__)
+          " || {
+            echo "::error::runtime dependencies missing from the published image"
+            docker run --rm --entrypoint pip "$image" list
+            exit 1
+          }

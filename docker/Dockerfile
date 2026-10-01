@@ -27,7 +27,15 @@ COPY src/ ./src/
 COPY config/ ./config/
 COPY scripts/ ./scripts/
 
-RUN pip install --no-cache-dir --no-deps -e . \
+# Assert the runtime dependencies are importable *at build time*.
+#
+# `arr-uploader --help` does not catch this: cli.py imports Telegram lazily, so
+# the console script resolves and the image looks healthy while kurigram is
+# absent. The worker then dies on startup in a restart loop. An import assertion
+# turns that into a failed build.
+RUN python -c "import kurigram, tgcrypto, httpx" \
+    && pip install --no-cache-dir --no-deps -e . \
+    && python -c "import arr_uploader.cli, arr_uploader.worker, arr_uploader.torbox" \
     && mkdir -p /srv/arr/state/uploader/inbox \
     && arr-uploader --help > /dev/null
 

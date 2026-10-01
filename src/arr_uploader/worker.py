@@ -10,8 +10,10 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
+import platform
 import signal
 import socket
+import sys
 import time
 import uuid
 from typing import Any
@@ -83,7 +85,19 @@ class Worker:
 
     async def run(self) -> None:
         self._install_signal_handlers()
-        LOG.info("worker starting", extra={"worker_id": self.worker_id, "pid": os.getpid()})
+        LOG.info(
+            "worker starting",
+            extra={
+                "worker_id": self.worker_id,
+                "pid": os.getpid(),
+                # Named because "kurigram is not installed" from a wrong
+                # interpreter is otherwise indistinguishable from a genuinely
+                # missing dependency, and sys.path says which one is running.
+                "python": sys.executable,
+                "version": platform.python_version(),
+                "prefix": sys.prefix,
+            },
+        )
 
         try:
             await self.telegram.start()
