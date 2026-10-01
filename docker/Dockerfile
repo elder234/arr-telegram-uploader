@@ -8,43 +8,39 @@ ENV PYTHONUNBUFFERED=1 \
 
 WORKDIR /app
 
-# Install into a virtualenv under /opt so the compiler can be purged afterwards
-# without touching the system Python. pip installs into /usr/local by default,
-# which apt cannot clean selectively.
+# Install into the image's own interpreter.
+#
+# A virtualenv under /opt was tried first, to keep the compiler purge from
+# touching installed packages. That was solving a problem that does not exist:
+# `apt-get purge build-essential` removes the compiler, not site-packages. The
+# venv cost a layer of ambiguity between the installer and the importer -- pip
+# would report kurigram installed into /opt/venv while a bare `python` read
+# /usr/local and reported it missing. One interpreter, named everywhere.
 COPY requirements.txt ./
 RUN apt-get update \
     && apt-get install -y --no-install-recommends build-essential \
     && rm -rf /var/lib/apt/lists/* \
-    && python -m venv /opt/venv \
-    && /opt/venv/bin/python -m pip install --no-cache-dir --upgrade pip \
-    && /opt/venv/bin/python -m pip install --no-cache-dir -r requirements.txt \
-    && /opt/venv/bin/python -c "import kurigram, tgcrypto, httpx; print('deps ok in venv')" \
+    && python -m pip install --no-cache-dir --upgrade pip \
+    && python -m pip install --no-cache-dir -r requirements.txt \
     && apt-get purge -y --auto-remove build-essential \
     && rm -rf /var/lib/apt/lists/*
-
-# Explicit, not just PATH: `python` alone resolves to the system interpreter in
-# this image, so every later layer that imported a dependency without naming the
-# venv was reading /usr/local and reporting the package missing while a working
-# copy sat in /opt/venv. Verified with `which python` in the layer below.
-ENV PATH="/opt/venv/bin:$PATH" \
-    VIRTUAL_ENV=/opt/venv
 
 COPY pyproject.toml ./
 COPY src/ ./src/
 COPY config/ ./config/
 COPY scripts/ ./scripts/
 
-# Assert the runtime dependencies are importable *at build time*.
+# Assert the runtime dependencies are importable at build time.
 #
 # `arr-uploader --help` does not catch this: cli.py imports Telegram lazily, so
 # the console script resolves and the image looks healthy while kurigram is
-# absent. The worker then dies on startup in a restart loop. An import assertion
-# turns that into a failed build.
-RUN which python && python -c "import sys; print('interpreter:', sys.executable)" \
-    && /opt/venv/bin/python -c "import kurigram, tgcrypto, httpx; print('deps ok')" \
+# absent. The worker then dies on startup in a restart loop. This is the check
+# that would have caught it, and it costs nothing.
+RUN python -c "import sys; print('interpreter:', sys.executable)" \
+    && python -c "import kurigram, tgcrypto, httpx; print('deps ok')" \
     && pip install --no-cache-dir --no-deps -e . \
     && python -c "import arr_uploader.cli, arr_uploader.worker, arr_uploader.torbox" \
-    && python -c "import kurigram; print('kurigram visible to the worker interpreter')" \
+    && python -c "import kurigram; print('kurigram visible to the runtime interpreter')" \
     && mkdir -p /srv/arr/state/uploader/inbox \
     && arr-uploader --help > /dev/null
 
