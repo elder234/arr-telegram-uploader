@@ -15,6 +15,7 @@ from pathlib import Path
 
 from . import __version__
 from .config import ConfigError, load_settings, ceiling_bytes
+from .db.models import Job, JobState, Part, PartState
 from .db.store import Store
 from .logging_setup import configure_logging
 
@@ -32,13 +33,125 @@ def cmd_worker(args: argparse.Namespace) -> int:
     return 0
 
 
+def _human_bytes(value: int) -> str:
+    size = float(value)
+    for unit in ("B", "KiB", "MiB", "GiB", "TiB"):
+        if size < 1024 or unit == "TiB":
+            return f"{size:.1f} {unit}" if unit != "B" else f"{int(size)} B"
+        size /= 1024
+    return f"{size:.1f} TiB"
+
+
+def _render_job(job: Job, parts: list[Part]) -> str:
+    """One human-readable line per job, with part progress."""
+    uploaded = sum(1 for p in parts if p.file_id)
+    verified = sum(1 for p in parts if p.state == PartState.VERIFIED)
+    total = len(parts) or job.part_count
+    name = job.title or Path(job.folder_path).name
+    size = _human_bytes(job.size_bytes)
+    # Job.state is typed str and arrives as a raw column value, so coerce rather
+    # than assuming the enum.
+    state = JobState(job.state).value
+
+    if total:
+        progress = f"{uploaded}/{total} parts, {verified} verified"
+    else:
+        progress = "not partitioned yet"
+
+    line = f"  #{job.id:<4} {state:<12} {size:>10}  {progress:<28} {name}"
+    if job.last_error:
+        line += f"\n         last error: {job.last_error}"
+    return line
+
+
 def cmd_status(args: argparse.Namespace) -> int:
+    """Human-readable pipeline state.
+
+    ``status --json`` keeps the original machine-readable payload for scripting.
+    """
     settings = load_settings(args.config)
     store = Store(_db_path(settings))
-    print(json.dumps({"states": store.stats(), "meta": {
-        "schema_version": store.get_meta("schema_version"),
-        "telegram_tier": store.get_meta("telegram_tier"),
-    }}, indent=2))
+
+    if args.json:
+        print(json.dumps({"states": store.stats(), "meta": {
+            "schema_version": store.get_meta("schema_version"),
+            "telegram_tier": store.get_meta("telegram_tier"),
+        }}, indent=2))
+        store.close()
+        return 0
+
+    states = store.stats()
+    print("uploader status")
+    print("=" * 72)
+
+    tier = store.get_meta("telegram_tier") or "unknown"
+    print(f"telegram tier : {tier}")
+    print(f"media root    : {settings.paths.media_root}")
+    print(f"state dir     : {settings.paths.state_dir}")
+
+    # TorBox intake, so it is visible without tailing logs.
+    tb = settings.torbox
+    print(f"torbox intake : {'enabled' if tb.api_key and tb.watch_dir else 'disabled'}")
+    if tb.api_key and tb.watch_dir:
+        journal = Path(tb.staging_dir or settings.paths.state_dir) / ".torbox-journal.json"
+        print(f"  watch dir   : {tb.watch_dir}")
+        pending = 0
+        if journal.exists():
+            try:
+                data = json.loads(journal.read_text(encoding="utf-8"))
+                entries = data.get("torrents", {}) if isinstance(data, dict) else {}
+                pending = sum(1 for v in entries.values() if v.get("state") != "fetched")
+                print(f"  journal     : {len(entries)} torrents, {pending} awaiting fetch")
+            except (json.JSONDecodeError, AttributeError, OSError):
+                print("  journal     : unreadable")
+        else:
+            print("  journal     : none yet (no torrents submitted)")
+
+        magnets = Path(tb.watch_dir)
+        waiting = 0
+        if magnets.is_dir():
+            waiting = sum(
+                1 for p in magnets.iterdir()
+                if p.suffix in (".magnet", ".torrent") and p.is_file()
+            )
+        print(f"  magnets waiting: {waiting}")
+
+    print()
+    print("jobs")
+    print("-" * 72)
+    if not states or sum(states.values()) == 0:
+        print("  no jobs yet")
+    else:
+        # Active and failed first: those are what an operator needs to see.
+        order = [
+            JobState.UPLOADING, JobState.VERIFYING, JobState.FINALIZING,
+            JobState.SCANNING, JobState.PARTITIONING, JobState.DISCOVERED,
+            JobState.FAILED, JobState.QUARANTINED, JobState.SKIPPED,
+            JobState.DONE,
+        ]
+        jobs: list[Any] = []
+        for state in order:
+            if states.get(state.value):
+                jobs.extend(store.jobs_in_state(state))
+        for job in jobs[: args.limit]:
+            print(_render_job(job, store.get_parts(job.id)))
+        remaining = len(jobs) - args.limit
+        if remaining > 0:
+            print(f"  ... and {remaining} more (use --limit to see them)")
+
+    print()
+    print("recent events")
+    print("-" * 72)
+    events = store.recent_events(limit=args.limit)
+    if not events:
+        print("  nothing yet")
+    for row in events:
+        detail = row["detail"] or ""
+        if len(detail) > 60:
+            detail = detail[:57] + "..."
+        job_ref = f"job={row['job_id']}" if row["job_id"] is not None else "-"
+        print(f"  {row['ts']}  {row['level']:<7} {job_ref:<10} {row['event']}  {detail}")
+
     store.close()
     return 0
 
@@ -260,7 +373,10 @@ def build_parser() -> argparse.ArgumentParser:
     sub = parser.add_subparsers(dest="command", required=True)
 
     sub.add_parser("worker", help="run the upload worker").set_defaults(func=cmd_worker)
-    sub.add_parser("status", help="show job counts").set_defaults(func=cmd_status)
+    st = sub.add_parser("status", help="show pipeline state: jobs, parts, torbox, recent events")
+    st.add_argument("--json", action="store_true", help="machine-readable output (the old payload)")
+    st.add_argument("--limit", type=int, default=10, help="max jobs and events to show (default 10)")
+    st.set_defaults(func=cmd_status)
     sub.add_parser("check", help="validate configuration").set_defaults(func=cmd_check)
     sub.add_parser("tier", help="probe Telegram Premium and the size ceiling").set_defaults(func=cmd_tier)
 

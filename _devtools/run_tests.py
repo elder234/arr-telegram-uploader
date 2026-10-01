@@ -60,12 +60,98 @@ def _fixture_source(tmp_path: Path) -> Path:
     return path
 
 
+_NOTSET = object()
+
+
+class MonkeyPatch:
+    """Stand-in for pytest's monkeypatch fixture.
+
+    Records every mutation and restores it on undo(). The runner calls undo()
+    after each case, so a patched attribute cannot leak into the next test --
+    which would turn a local failure into an unrelated one several modules later.
+    """
+
+    def __init__(self) -> None:
+        self._undo: list = []
+
+    @staticmethod
+    def _import_dotted(path: str):
+        """Resolve "pkg.mod.attr" to the owning object and the final name."""
+        module_path, _, attr = path.rpartition(".")
+        if not module_path:
+            raise TypeError(f"not enough values to unpack: {path!r}")
+        obj = importlib.import_module(module_path)
+        names = attr.split(".")
+        for part in names[:-1]:
+            obj = getattr(obj, part)
+        return obj, names[-1]
+
+    def setattr(self, target, name, value=_NOTSET, raising: bool = True):
+        # Two shapes, as in pytest: setattr(obj, name, value) and
+        # setattr("pkg.mod.attr", value) -- in the second form the value
+        # arrives positionally in `name`.
+        if isinstance(target, str):
+            if value is _NOTSET:
+                value = name
+            target, name = self._import_dotted(target)
+        if value is _NOTSET:
+            raise TypeError("setattr() requires a value")
+        had = hasattr(target, name)
+        old = getattr(target, name, None)
+        self._undo.append(
+            lambda: setattr(target, name, old) if had else delattr(target, name)
+        )
+        setattr(target, name, value)
+
+    def delattr(self, target, name: str, raising: bool = True):
+        if isinstance(target, str):
+            target, name = self._import_dotted(target)
+        had = hasattr(target, name)
+        old = getattr(target, name, None)
+        if not had and raising:
+            raise AttributeError(name)
+        self._undo.append(lambda: setattr(target, name, old))
+        if had:
+            delattr(target, name)
+
+    def setenv(self, name: str, value: str, prepend: str | None = None):
+        old = os.environ.get(name)
+        self._undo.append(
+            lambda: os.environ.__setitem__(name, old)
+            if old is not None
+            else os.environ.pop(name, None)
+        )
+        os.environ[name] = str(value)
+
+    def delenv(self, name: str, raising: bool = True):
+        old = os.environ.get(name)
+        if old is None and raising:
+            raise KeyError(name)
+        self._undo.append(lambda: os.environ.__setitem__(name, old) if old is not None else None)
+        os.environ.pop(name, None)
+
+    def chdir(self, path):
+        old = os.getcwd()
+        self._undo.append(lambda: os.chdir(old))
+        os.chdir(path)
+
+    def syspath_prepend(self, path):
+        old = list(sys.path)
+        self._undo.append(lambda: sys.path.__setitem__(slice(None), old))
+        sys.path.insert(0, str(path))
+
+    def undo(self) -> None:
+        while self._undo:
+            self._undo.pop()()
+
+
 # Builtin fixtures the suite uses. pytest provides these natively; the shim has
 # to supply them so the same test files run either way. Each entry may depend on
 # the ones before it.
 _FIXTURES = {
     "tmp_path": lambda ctx: _fixture_tmp_path(ctx["case_id"]),
     "source": lambda ctx: _fixture_source(ctx["tmp_path"]),
+    "monkeypatch": lambda ctx: MonkeyPatch(),
 }
 
 
@@ -175,6 +261,13 @@ def main(argv: list[str]) -> int:
                 else:
                     passed += 1
                     print(f"    . {name}{label}")
+                finally:
+                    # Undo monkeypatch even when the test failed: a leaked
+                    # attribute would surface as an unrelated failure much
+                    # later, in a different module.
+                    patcher = case_kwargs.get("monkeypatch")
+                    if patcher is not None:
+                        patcher.undo()
 
     print()
     for test_id, tb in failures:

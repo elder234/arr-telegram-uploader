@@ -450,6 +450,19 @@ class Store:
     def recent_events(self, limit: int = 50) -> list[sqlite3.Row]:
         return self._query("SELECT * FROM events ORDER BY id DESC LIMIT ?", (limit,))
 
+    def jobs_in_state(self, state: JobState | str, limit: int = 500) -> list[Job]:
+        """Jobs in one state, oldest first.
+
+        Backs `arr-uploader status`. Bounded so a large history cannot make the
+        command unbounded to query.
+        """
+        value = state.value if isinstance(state, JobState) else str(state)
+        rows = self._query(
+            "SELECT * FROM jobs WHERE state = ? ORDER BY created_at ASC, id ASC LIMIT ?",
+            (value, int(limit)),
+        )
+        return [Job.from_row(row) for row in rows]
+
     def stats(self) -> dict[str, int]:
         rows = self._query("SELECT state, COUNT(*) AS n FROM jobs GROUP BY state")
         return {r["state"]: int(r["n"]) for r in rows}

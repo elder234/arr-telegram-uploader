@@ -189,11 +189,33 @@ arr-uploader plan <file>        # show the split plan, uploads nothing
 arr-uploader tier               # probe Premium and the resulting ceiling
 arr-uploader enqueue <folder>   # queue manually
 arr-uploader sweep              # run the reconciler once
-arr-uploader status             # job counts
+arr-uploader status             # what the pipeline is doing right now
+arr-uploader status --json      # same data, machine-readable
+arr-uploader status --limit 50  # show more jobs and events
 arr-uploader worker             # run the worker
 arr-uploader fetch              # submit magnets, fetch finished torrents
 arr-uploader fetch --dry-run    # show what would be submitted, submits nothing
 arr-uploader torbox             # list torrent states from TorBox
+```
+
+### Checking on it
+
+There is no web UI and no port to open. `status` is the window:
+
+```bash
+arr-uploader status
+```
+
+It prints the Telegram tier, the resolved paths, whether TorBox intake is
+enabled, how many magnets are waiting, the journal's torrent count, every job
+with its size and part progress (`3/5 parts, 3 verified`), the last error on
+failed jobs, and recent events. Quiet logs are ambiguous between working,
+stalled and waiting — `status` distinguishes them.
+
+Inside Docker:
+
+```bash
+docker compose -f docker/docker-compose.yml exec uploader arr-uploader status
 ```
 
 ## Downloads (TorBox)
@@ -247,7 +269,7 @@ python _devtools/run_tests.py            # all
 python _devtools/run_tests.py partition  # one module
 ```
 
-291 tests. `pytest` is used when installed; `_devtools/` provides a small shim and
+299 tests. `pytest` is used when installed; `_devtools/` provides a small shim and
 runner so the suite also runs with no package index available.
 
 Coverage includes the negative cases that matter most: verification failure must
