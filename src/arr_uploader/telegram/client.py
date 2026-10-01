@@ -65,24 +65,37 @@ class TelegramClient:
             session_string = (self.config.session_string or "").strip()
             session_file = Path(self.config.session_file)
 
+            # Created up front for both branches: the library always constructs
+            # a storage rooted at workdir, and a missing parent directory is a
+            # startup failure rather than something it recovers from.
+            session_file.parent.mkdir(parents=True, exist_ok=True)
+
             LOG.info(
                 "starting telegram client",
                 extra={"session": "string" if session_string else "file"},
             )
 
             if session_string:
-                # A session string carries the auth key, so no name or workdir is
-                # needed. Passing the string as ``name`` would treat it as a
-                # filename and try to persist it.
+                # ``name`` is a required positional argument even when a session
+                # string is supplied: the library always constructs
+                # SQLiteStorage(self.name, ..., in_memory=True), so the name only
+                # labels an in-memory database and is never written to disk.
+                # Omitting it raised
+                # "Client.__init__() missing 1 required positional argument".
+                #
+                # The session string is passed as session_string, never as name:
+                # a base64 blob used as a filename would be treated as a path.
                 client = Client(
+                    name=session_file.stem,
                     session_string=session_string,
                     api_id=self.config.api_id,
                     api_hash=self.config.api_hash,
+                    # The storage is in-memory either way; a workdir is still
+                    # required so the default does not point at $HOME, which is
+                    # unwritable for an unprivileged container user.
+                    workdir=str(session_file.parent),
                 )
             else:
-                # File-backed session: the workdir must exist before Kurigram
-                # writes into it, otherwise startup fails on a fresh install.
-                session_file.parent.mkdir(parents=True, exist_ok=True)
                 client = Client(
                     name=session_file.stem,
                     api_id=self.config.api_id,
