@@ -12,15 +12,22 @@ WORKDIR /app
 # without touching the system Python. pip installs into /usr/local by default,
 # which apt cannot clean selectively.
 COPY requirements.txt ./
-RUN python -m venv /opt/venv \
-    && apt-get update \
+RUN apt-get update \
     && apt-get install -y --no-install-recommends build-essential \
     && rm -rf /var/lib/apt/lists/* \
-    && /opt/venv/bin/pip install --no-cache-dir -r requirements.txt \
+    && python -m venv /opt/venv \
+    && /opt/venv/bin/python -m pip install --no-cache-dir --upgrade pip \
+    && /opt/venv/bin/python -m pip install --no-cache-dir -r requirements.txt \
+    && /opt/venv/bin/python -c "import kurigram, tgcrypto, httpx; print('deps ok in venv')" \
     && apt-get purge -y --auto-remove build-essential \
     && rm -rf /var/lib/apt/lists/*
 
-ENV PATH="/opt/venv/bin:$PATH"
+# Explicit, not just PATH: `python` alone resolves to the system interpreter in
+# this image, so every later layer that imported a dependency without naming the
+# venv was reading /usr/local and reporting the package missing while a working
+# copy sat in /opt/venv. Verified with `which python` in the layer below.
+ENV PATH="/opt/venv/bin:$PATH" \
+    VIRTUAL_ENV=/opt/venv
 
 COPY pyproject.toml ./
 COPY src/ ./src/
@@ -33,9 +40,11 @@ COPY scripts/ ./scripts/
 # the console script resolves and the image looks healthy while kurigram is
 # absent. The worker then dies on startup in a restart loop. An import assertion
 # turns that into a failed build.
-RUN python -c "import kurigram, tgcrypto, httpx" \
+RUN which python && python -c "import sys; print('interpreter:', sys.executable)" \
+    && /opt/venv/bin/python -c "import kurigram, tgcrypto, httpx; print('deps ok')" \
     && pip install --no-cache-dir --no-deps -e . \
     && python -c "import arr_uploader.cli, arr_uploader.worker, arr_uploader.torbox" \
+    && python -c "import kurigram; print('kurigram visible to the worker interpreter')" \
     && mkdir -p /srv/arr/state/uploader/inbox \
     && arr-uploader --help > /dev/null
 
