@@ -197,6 +197,17 @@ class TorboxIntake:
         self._pending: dict[str, PendingMagnet] = {}
         self.journal = journal if journal is not None else Journal(self.fetch_dir / ".torbox-journal.json")
 
+        if config.watch_dir:
+            # Created rather than assumed: a configured-but-missing watch dir
+            # would otherwise look like "no magnets" forever, and the operator
+            # would be dropping files into a folder that was never created.
+            try:
+                Path(config.watch_dir).mkdir(parents=True, exist_ok=True)
+            except (OSError, ValueError) as exc:
+                # ValueError too: a path with an embedded null raises that rather
+                # than OSError, and it must not take the worker down.
+                LOG.error("could not create torbox watch dir", extra={"dir": config.watch_dir, "error": str(exc)})
+
     # ------------------------------------------------------------- discovery
 
     def discover(self) -> list[tuple[Path, str]]:

@@ -164,3 +164,22 @@ def test_handoff_without_inbox_warns_instead_of_silently_dropping(tmp_path):
     folder.mkdir(parents=True)
 
     asyncio.run(intake.handoff(folder, _torrent(1)))  # must not raise
+
+
+def test_watch_dir_is_created_not_assumed(tmp_path):
+    """A configured-but-missing watch dir would look like 'no magnets' forever."""
+    watch = tmp_path / "nested" / "magnets"
+    cfg = _config(tmp_path)
+    cfg.watch_dir = str(watch)
+
+    TorboxIntake(cfg, fetch_dir=str(tmp_path / "fetch"), client=FakeClient([]))
+
+    assert watch.is_dir(), "watch dir was not created"
+
+
+def test_uncreatable_watch_dir_does_not_raise(tmp_path):
+    """An invalid watch dir must log, not stop uploads."""
+    cfg = _config(tmp_path)
+    cfg.watch_dir = "\0invalid"
+
+    TorboxIntake(cfg, fetch_dir=str(tmp_path / "fetch"), client=FakeClient([]))  # must not raise
