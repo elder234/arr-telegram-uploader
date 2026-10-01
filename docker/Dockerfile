@@ -23,7 +23,10 @@ RUN apt-get update \
     && python -m pip install --no-cache-dir --upgrade pip \
     && python -m pip install --no-cache-dir -r requirements.txt \
     && apt-get purge -y --auto-remove build-essential \
-    && rm -rf /var/lib/apt/lists/*
+    && rm -rf /var/lib/apt/lists/* \
+    && python -c "import sys, site; print('PATH-CHECK'); print('exe', sys.executable); print('prefix', sys.prefix); print('path', sys.path); print('sitepkgs', site.getsitepackages()); print('usersite', site.getusersitepackages())" \
+    && (python -m pip show kurigram || true) \
+    && (ls -d /usr/local/lib/python3.12/site-packages/* 2>/dev/null | head -20 || true)
 
 COPY pyproject.toml ./
 COPY src/ ./src/
