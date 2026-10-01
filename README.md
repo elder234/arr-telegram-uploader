@@ -127,9 +127,18 @@ pip install -r requirements.txt
 
 ### 2. Deploy
 
+`.env` belongs at the **repo root**, and compose is told to read it from there:
+
 ```bash
 docker compose -f docker/docker-compose.yml up -d
 ```
+
+This works from the repo root or from `docker/`. Do not create `docker/.env`.
+Compose resolves `${VAR}` against a `.env` sitting next to the compose file, so a
+root `.env` is invisible to `${VAR}` interpolation — the file is passed in with
+`env_file: ../.env` instead, which is why it works either way. A missing `.env`
+fails immediately with `required: true` rather than starting a container with no
+credentials.
 
 Compose builds locally. To use the published image instead:
 
@@ -238,7 +247,7 @@ python _devtools/run_tests.py            # all
 python _devtools/run_tests.py partition  # one module
 ```
 
-272 tests. `pytest` is used when installed; `_devtools/` provides a small shim and
+286 tests. `pytest` is used when installed; `_devtools/` provides a small shim and
 runner so the suite also runs with no package index available.
 
 Coverage includes the negative cases that matter most: verification failure must

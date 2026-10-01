@@ -15,26 +15,32 @@ services:
     container_name: arr-uploader
     restart: unless-stopped
 
+    # Secrets come from the repo-root .env.
+    #
+    # It has to be env_file and not ${VAR}: compose only interpolates ${VAR}
+    # from the shell or a .env sitting next to this file (docker/.env), so the
+    # documented `cp .env.example .env` at the root was never visible to it and
+    # every variable came back empty. env_file is resolved relative to this file,
+    # so ../.env works whether you run compose from the repo root or from docker/.
+    #
+    # required: true means a missing .env fails here instead of starting a
+    # container with no Telegram credentials and reporting it later as a
+    # confusing healthcheck failure.
+    env_file:
+      - path: ../.env
+        required: true
+
+    # Only container-side constants live here. Anything a user configures
+    # (Telegram, Radarr, TorBox) is deliberately absent: a key in environment:
+    # would take precedence over env_file and silently override it with the
+    # interpolated default.
     environment:
-      TELEGRAM_API_ID: "${TELEGRAM_API_ID:?set TELEGRAM_API_ID}"
-      TELEGRAM_API_HASH: "${TELEGRAM_API_HASH:?set TELEGRAM_API_HASH}"
-      TELEGRAM_CHAT_ID: "${TELEGRAM_CHAT_ID:?set TELEGRAM_CHAT_ID}"
-      TELEGRAM_SESSION_STRING: "${TELEGRAM_SESSION_STRING:-}"
-      TELEGRAM_THREAD_ID: "${TELEGRAM_THREAD_ID:-}"
-      TELEGRAM_PART_CEILING_MB: "${TELEGRAM_PART_CEILING_MB:-auto}"
       MEDIA_ROOT: /data/media
       STATE_DIR: /srv/arr/state/uploader
       INBOX_DIR: /srv/arr/state/uploader/inbox
       RADARR_URL: http://radarr:7878
-      RADARR_API_KEY: "${RADARR_API_KEY:-}"
-      LOG_LEVEL: "${LOG_LEVEL:-INFO}"
-
-      # TorBox intake. Set TORBOX_API_KEY to enable; TORBOX_WATCH_DIR then names
-      # the folder to drop magnets into. Both or neither: a key with no watch dir
-      # does nothing, and a watch dir with no key never submits anything.
-      TORBOX_API_KEY: "${TORBOX_API_KEY:-}"
-      TORBOX_WATCH_DIR: "${TORBOX_WATCH_DIR:-/srv/arr/state/uploader/magnets}"
       TORBOX_FETCH_DIR: /srv/arr/state/uploader/fetch
+      PYTHONUNBUFFERED: "1"
 
     volumes:
       # The Arr data root: uploads reads the library and removes a movie folder
