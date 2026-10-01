@@ -1,0 +1,32 @@
+name: package visibility
+
+on:
+  workflow_dispatch:
+
+# One-off helper: newly published GHCR packages default to private, so an
+# anonymous `docker pull` gets 401 even though the build succeeded. This flips
+# the package to public once. Safe to delete afterwards.
+permissions:
+  packages: write
+
+jobs:
+  make-public:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Make the container package public
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          for attempt in 1 2 3; do
+            status=$(gh api --silent -o /dev/null -w '%{http_code}' \
+              -X PATCH \
+              -H "Accept: application/vnd.github+json" \
+              /users/${{ github.repository_owner }}/packages/container/arr-telegram-uploader \
+              -f visibility=public || true)
+            echo "attempt $attempt -> HTTP $status"
+            [ "$status" = "204" ] && exit 0
+            sleep 10
+          done
+          echo "could not change visibility; flip it in the package settings UI"
+          exit 1
