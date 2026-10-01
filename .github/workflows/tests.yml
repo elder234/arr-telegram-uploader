@@ -50,15 +50,51 @@ jobs:
         # the same way the container resolves it.
         run: |
           python -c "import arr_uploader.cli, arr_uploader.worker, arr_uploader.pipeline"
+          python -c "import arr_uploader.torbox, arr_uploader.intake.torbox_intake"
           arr-uploader --help > /dev/null
           echo "console script resolved"
 
-      - name: Session-string guard
-        # A leaked session string is full account access, so fail the build rather
-        # than let one reach main.
+      - name: Secret guard
+        # A leaked session string is full account access; a leaked TorBox key is
+        # full access to the seedbox. Fail the build rather than let one reach main.
+        #
+        # The patterns come from _devtools/secret_patterns.py rather than being
+        # written out here. A guard duplicated in two places drifts, and this one
+        # already was wrong three times: \\s instead of [[:space:]], missing -i
+        # for TORBOX_API_KEY, and an extraction that silently yielded an empty
+        # pattern. One source of truth, tested directly against git grep.
         run: |
-          if git grep -nE 'session_string\s*=\s*["'"'"'][A-Za-z0-9_-]{40,}' -- . ; then
-            echo "::error::a Telegram session string appears to be committed"
+          set -uo pipefail
+          python - <<'PY' > /tmp/guard_patterns
+          import sys
+          sys.path.insert(0, "_devtools")
+          import secret_patterns as p
+          print(p.KEY_PATTERN)
+          print(p.SESSION_PATTERN)
+          PY
+
+          key_pat=$(sed -n 1p /tmp/guard_patterns)
+          session_pat=$(sed -n 2p /tmp/guard_patterns)
+
+          # An empty pattern makes `git grep -E ""` match every tracked file, so a
+          # silent extraction failure would fail every build while looking like a
+          # working guard. Refuse to run in that state.
+          if [ -z "$key_pat" ] || [ -z "$session_pat" ]; then
+            echo "::error::could not extract the secret patterns; guard not run"
             exit 1
           fi
-          echo "no session strings found in tracked files"
+
+          status=0
+          if git grep -niE "$session_pat" -- . ; then
+            echo "::error::a Telegram session string appears to be committed"
+            status=1
+          fi
+          if git grep -niE "$key_pat" -- . ; then
+            echo "::error::an API key appears to be committed"
+            status=1
+          fi
+
+          if [ "$status" -eq 0 ]; then
+            echo "no secrets found in tracked files"
+          fi
+          exit $status

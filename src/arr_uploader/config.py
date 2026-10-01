@@ -65,6 +65,23 @@ class UploaderConfig:
 
 
 @dataclass(slots=True)
+class TorboxConfig:
+    api_key: str = ""
+    base_url: str = "https://api.torbox.app/v1/api"
+    timeout_seconds: int = 30
+    # magnet watch folder, one magnet per file
+    watch_dir: str = ""
+    # how often to poll torrent state
+    poll_interval_seconds: int = 60
+    # mylist is cached server-side for 600s; bypass costs more of our rate budget
+    bypass_cache: bool = False
+    # magnet/direct .torrent files land here before being submitted
+    staging_dir: str = ""
+    # set true to ask TorBox to delete the torrent after we have the files
+    delete_after_fetch: bool = False
+
+
+@dataclass(slots=True)
 class DownloadConfig:
     concurrency: int = 1
 
@@ -115,6 +132,7 @@ class Settings:
     naming: NamingConfig = field(default_factory=NamingConfig)
     uploader: UploaderConfig = field(default_factory=UploaderConfig)
     download: DownloadConfig = field(default_factory=DownloadConfig)
+    torbox: TorboxConfig = field(default_factory=TorboxConfig)
     deletion: DeletionConfig = field(default_factory=DeletionConfig)
     radarr: RadarrConfig = field(default_factory=RadarrConfig)
     reconciler: ReconcilerConfig = field(default_factory=ReconcilerConfig)
@@ -163,6 +181,22 @@ class Settings:
             problems.append("uploader.stability_seconds must be >= 0")
         if self.download.concurrency < 1:
             problems.append("download.concurrency must be >= 1")
+
+        # A watch dir with no key would silently never submit anything, and an
+        # empty watch dir with a key is just a client that is never asked to do
+        # anything. Require both together so a half-configured intake fails loudly.
+        if bool(self.torbox.api_key) != bool(self.torbox.watch_dir):
+            problems.append(
+                "torbox.api_key and torbox.watch_dir must be set together "
+                f"(api_key={'set' if self.torbox.api_key else 'empty'}, "
+                f"watch_dir={self.torbox.watch_dir or 'empty'})"
+            )
+        if self.torbox.watch_dir and Path(self.torbox.watch_dir) == Path(self.paths.media_root):
+            problems.append("torbox.watch_dir must not be paths.media_root")
+        if self.torbox.poll_interval_seconds < 30:
+            # mylist is cached server-side for 600s; polling faster just burns
+            # the 300/min budget to read stale state.
+            problems.append("torbox.poll_interval_seconds must be >= 30")
         if self.webhook.enabled and not self.webhook.secret:
             problems.append("webhook.secret is required when webhook.enabled is true")
 
@@ -222,6 +256,7 @@ def load_settings(config_path: str | os.PathLike[str] | None = None, env: dict[s
         "naming": NamingConfig,
         "uploader": UploaderConfig,
         "download": DownloadConfig,
+        "torbox": TorboxConfig,
         "deletion": DeletionConfig,
         "radarr": RadarrConfig,
         "reconciler": ReconcilerConfig,
@@ -245,10 +280,16 @@ def load_settings(config_path: str | os.PathLike[str] | None = None, env: dict[s
         "TELEGRAM_CHAT_ID": ("telegram", {"chat_id": int}, "telegram.chat_id"),
         "TELEGRAM_THREAD_ID": ("telegram", {"thread_id": int}, "telegram.thread_id"),
         "TELEGRAM_PART_CEILING_MB": ("telegram", {"part_ceiling_mb": str}, "telegram.part_ceiling_mb"),
+        "TORBOX_FETCH_DIR": ("torbox", {"staging_dir": str}, "torbox.staging_dir"),
+        "TORBOX_DELETE_AFTER_FETCH": ("torbox", {"delete_after_fetch": bool}, "torbox.delete_after_fetch"),
         "MEDIA_ROOT": ("paths", {"media_root": str}, "paths.media_root"),
         "STATE_DIR": ("paths", {"state_dir": str}, "paths.state_dir"),
         "INBOX_DIR": ("paths", {"inbox_dir": str}, "paths.inbox_dir"),
         "QUARANTINE_DIR": ("deletion", {"quarantine_dir": str}, "deletion.quarantine_dir"),
+        "TORBOX_API_KEY": ("torbox", {"api_key": str}, "torbox.api_key"),
+        "TORBOX_BASE_URL": ("torbox", {"base_url": str}, "torbox.base_url"),
+        "TORBOX_WATCH_DIR": ("torbox", {"watch_dir": str}, "torbox.watch_dir"),
+        "TORBOX_STAGING_DIR": ("torbox", {"staging_dir": str}, "torbox.staging_dir"),
         "RADARR_URL": ("radarr", {"url": str}, "radarr.url"),
         "RADARR_API_KEY": ("radarr", {"api_key": str}, "radarr.api_key"),
         "WEBHOOK_SECRET": ("webhook", {"secret": str}, "webhook.secret"),
@@ -261,7 +302,10 @@ def load_settings(config_path: str | os.PathLike[str] | None = None, env: dict[s
             continue
         attr, caster = next(iter(keys.items()))
         try:
-            setattr(built[section], attr, caster(raw_value))
+            # bool("false") is True, so booleans must go through _coerce, which
+            # understands the string forms. Casting directly silently turned
+            # TORBOX_DELETE_AFTER_FETCH=false into True.
+            setattr(built[section], attr, _coerce(raw_value, caster) if caster is bool else caster(raw_value))
         except (TypeError, ValueError) as exc:
             raise ConfigError(f"{env_key} could not be applied to {label}: {exc}") from exc
 

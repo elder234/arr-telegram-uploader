@@ -29,11 +29,19 @@ services:
       RADARR_API_KEY: "${RADARR_API_KEY:-}"
       LOG_LEVEL: "${LOG_LEVEL:-INFO}"
 
+      # TorBox intake. Set TORBOX_API_KEY to enable; TORBOX_WATCH_DIR then names
+      # the folder to drop magnets into. Both or neither: a key with no watch dir
+      # does nothing, and a watch dir with no key never submits anything.
+      TORBOX_API_KEY: "${TORBOX_API_KEY:-}"
+      TORBOX_WATCH_DIR: "${TORBOX_WATCH_DIR:-/srv/arr/state/uploader/magnets}"
+      TORBOX_FETCH_DIR: /srv/arr/state/uploader/fetch
+
     volumes:
       # The Arr data root: uploads reads the library and removes a movie folder
       # only after a verified upload.
       - /srv/arr/data:/data
-      # Uploader state: queue database, Telegram session, quarantine.
+      # Uploader state: queue database, Telegram session, quarantine, magnets,
+      # and the TorBox fetch staging area.
       - /srv/arr/state/uploader:/srv/arr/state/uploader
 
     # Upload bandwidth, not disk, is the constraint.
@@ -50,20 +58,14 @@ services:
         max-size: "10m"
         max-file: "3"
 
-  # --- Example download client -------------------------------------------
-  # TorBox via the qBittorrent-compatible bridge. Radarr connects to this on
-  # 8080 as if it were qBittorrent. Pull-based, so nothing is mounted.
+  # --- TorBox intake ------------------------------------------------------
+  # Built in: drop a magnet into TORBOX_WATCH_DIR and this container submits it,
+  # polls until the download completes, fetches the files, and hands them to the
+  # upload pipeline. No third-party bridge required.
   #
-  # torbox-client:
-  #   image: ghcr.io/devblaze/torbox-client:latest
-  #   container_name: torbox-client
-  #   restart: unless-stopped
-  #   environment:
-  #     TORBOX_API_KEY: "${TORBOX_API_KEY:?set TORBOX_API_KEY}"
-  #   ports:
-  #     - "8080:8080"
-  #   volumes:
-  #     - /srv/arr/data/downloads:/data
+  # Radarr is not part of this path. If you would rather have Radarr manage the
+  # library, run it against a download client separately; this container is happy
+  # either way, since it only acts on folders that appear in the media root.
 
   # --- Example Radarr Custom Script wiring --------------------------------
   # Mount this file into Radarr and point a Custom Script at it:

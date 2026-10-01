@@ -166,6 +166,91 @@ def cmd_check(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_torbox(args: argparse.Namespace) -> int:
+    """List torrent states from TorBox.
+
+    The quickest way to tell intake is configured and the key is accepted,
+    without submitting anything.
+    """
+    settings = load_settings(args.config)
+    if not settings.torbox.api_key:
+        print("torbox is not configured: set TORBOX_API_KEY", file=sys.stderr)
+        return 2
+
+    import httpx
+
+    from .torbox import TorboxClient
+
+    async def run() -> list[dict[str, object]]:
+        async with httpx.AsyncClient(follow_redirects=True) as http:
+            client = TorboxClient(settings.torbox)
+            torrents = await client.list_torrents(http)
+        return [
+            {
+                "id": t.id,
+                "name": t.name,
+                "state": t.state.value,
+                "raw_state": t.raw_state,
+                "progress": t.progress,
+                "size": t.size,
+                "files": len(t.files),
+                "ready": t.ready,
+            }
+            for t in torrents
+        ]
+
+    print(json.dumps(asyncio.run(run()), indent=2))
+    return 0
+
+
+def cmd_fetch(args: argparse.Namespace) -> int:
+    """Submit watched magnets and download finished torrents.
+
+    Runs one cycle and exits, so it is inspectable. The worker does the same
+    thing on a loop.
+    """
+    settings = load_settings(args.config)
+    if not settings.torbox.api_key or not settings.torbox.watch_dir:
+        print(
+            "torbox intake is off: set TORBOX_API_KEY and TORBOX_WATCH_DIR to enable it",
+            file=sys.stderr,
+        )
+        return 2
+
+    import httpx
+
+    from .intake.torbox_intake import TorboxIntake
+
+    async def run() -> dict[str, object]:
+        intake = TorboxIntake(
+            settings.torbox,
+            fetch_dir=settings.torbox.staging_dir or settings.paths.state_dir,
+        )
+        fetched: list[str] = []
+        ready_count = 0
+        async with httpx.AsyncClient(follow_redirects=True) as http:
+            stats = await intake.submit_all(http, dry_run=args.dry_run)
+            if not args.dry_run:
+                ready = await intake.poll(http)
+                ready_count = len(ready)
+                for torrent in ready:
+                    folder = await intake.fetch(http, torrent)
+                    if folder is not None:
+                        fetched.append(str(folder))
+        return {
+            "dry_run": bool(args.dry_run),
+            "submitted": stats.submitted,
+            "skipped_cached": stats.skipped_cached,
+            "failed": stats.failed,
+            "ready": ready_count,
+            "fetched": fetched,
+            "errors": stats.errors,
+        }
+
+    print(json.dumps(asyncio.run(run()), indent=2))
+    return 0
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="arr-uploader", description=__doc__)
     parser.add_argument("--config", default=None, help="path to uploader.toml")
@@ -190,6 +275,12 @@ def build_parser() -> argparse.ArgumentParser:
     p = sub.add_parser("sweep", help="run the reconciler once")
     p.add_argument("--all", action="store_true", help="ignore the min-age filter")
     p.set_defaults(func=cmd_sweep)
+
+    sub.add_parser("torbox", help="list torrent states from TorBox").set_defaults(func=cmd_torbox)
+
+    p = sub.add_parser("fetch", help="submit watched magnets and fetch finished torrents")
+    p.add_argument("--dry-run", action="store_true", help="report what would be submitted, submit nothing")
+    p.set_defaults(func=cmd_fetch)
 
     return parser
 

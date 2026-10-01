@@ -50,6 +50,27 @@ drain_on_shutdown = true
 # TorBox free tier is bandwidth-throttled. Sequential is the safe default.
 concurrency = 1
 
+[torbox]
+# Set api_key (TORBOX_API_KEY) and watch_dir (TORBOX_WATCH_DIR) to enable intake.
+# Both or neither: a key with no watch dir does nothing, and a watch dir with no
+# key silently never submits anything.
+api_key = ""
+base_url = "https://api.torbox.app/v1/api"
+timeout_seconds = 30
+# Drop a magnet here (one per file, or *.torrent). Submitted files are renamed
+# to *.submitted so a restart cannot duplicate a torrent.
+# Empty by default: intake stays off until you set a key and a watch dir.
+# watch_dir = "/srv/arr/state/uploader/magnets"
+watch_dir = ""
+# Completed downloads are written here and handed to the upload pipeline.
+staging_dir = "/srv/arr/state/uploader/fetch"
+poll_interval_seconds = 60
+# mylist is cached server-side for 600s. Leave false unless you need live state.
+bypass_cache = false
+# Delete the torrent from TorBox once the files are on disk. Off by default: it
+# frees server space but is irreversible.
+delete_after_fetch = false
+
 [deletion]
 enabled = true
 # Hard gate. Local files are only removed after every part is uploaded AND

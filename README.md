@@ -182,7 +182,51 @@ arr-uploader enqueue <folder>   # queue manually
 arr-uploader sweep              # run the reconciler once
 arr-uploader status             # job counts
 arr-uploader worker             # run the worker
+arr-uploader fetch              # submit magnets, fetch finished torrents
+arr-uploader fetch --dry-run    # show what would be submitted, submits nothing
+arr-uploader torbox             # list torrent states from TorBox
 ```
+
+## Downloads (TorBox)
+
+This project does its own intake. There is no qBittorrent bridge and no Radarr
+required for downloads: drop a magnet in a folder and the uploader submits it,
+waits, fetches the files, and hands the finished folder to the upload pipeline.
+
+```bash
+# .env
+TORBOX_API_KEY=...          # https://torbox.app/settings/account
+TORBOX_WATCH_DIR=/srv/arr/state/uploader/magnets
+```
+
+```
+echo 'magnet:?xt=urn:btih:...' > magnets/some-release.magnet
+docker compose -f docker/docker-compose.yml exec uploader arr-uploader torbox   # watch state
+docker compose -f docker/docker-compose.yml exec uploader arr-uploader fetch --dry-run
+```
+
+`fetch` renames each magnet to `*.magnet.submitted` after TorBox accepts it, so a
+restart cannot create a duplicate torrent. A magnet TorBox already has is
+detected first and skips the create, which matters because TorBox caps uncached
+creates at **60 per hour**.
+
+Facts this integration depends on, from the published OpenAPI spec:
+
+- `POST /v1/api/torrents/createtorrent` is **multipart**, not JSON.
+- Every response is `{success, error, detail, data}`; HTTP 200 can still be a failure.
+- `mylist` state is cached server-side for 600s unless `bypass_cache` is passed, so
+  the poll interval floor is 30s.
+- `requestdl` links are valid for 3 hours **to start** the transfer.
+- The free plan caps a single download at 10 GiB; larger torrents are refused
+  before a CDN url is requested.
+
+Files are written `.part` first and renamed on completion, and the size is
+checked against TorBox's own file listing, so a truncated download never reaches
+the upload pipeline. Torrent names are attacker-controlled, so the fetch path
+sanitises every name and refuses any that could escape the staging directory.
+
+None of this has been run against a live TorBox account yet. It is written to the
+documented contract and covered by fakes, not by real traffic.
 
 `plan` is the quickest way to confirm ceiling and sizing on a real release
 before letting anything touch Telegram.
@@ -194,7 +238,7 @@ python _devtools/run_tests.py            # all
 python _devtools/run_tests.py partition  # one module
 ```
 
-223 tests. `pytest` is used when installed; `_devtools/` provides a small shim and
+272 tests. `pytest` is used when installed; `_devtools/` provides a small shim and
 runner so the suite also runs with no package index available.
 
 Coverage includes the negative cases that matter most: verification failure must
@@ -217,6 +261,13 @@ files for committed session strings. `tests.yml` runs `pip install -e .`;
 What the suite does **not** cover: real Telegram, Radarr, or TorBox traffic, a
 multi-GB upload, throughput, live FloodWait, or a crash mid-upload. Those need a
 real run.
+
+`tests/test_secret_guard.py` tests the CI secret guard by running the real
+patterns through `git grep` in a scratch repository. It exists because that guard
+was wrong three times: it used `\s` where POSIX ERE wants `[[:space:]]`, it lacked
+`-i` so `TORBOX_API_KEY` slipped past, and its pattern extraction failed silently
+leaving an empty pattern that matches every file. The patterns now live in
+`_devtools/secret_patterns.py` so the workflow and the tests cannot drift.
 
 ## Configuration notes
 
