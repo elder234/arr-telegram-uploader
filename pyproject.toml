@@ -21,8 +21,14 @@ arr-uploader = "arr_uploader.cli:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]
+# Explicit: without this, a stray directory under src/ can be picked up as a
+# package and fail the build, and __pycache__ is not something to ship.
+include = ["arr_uploader*"]
 
 [tool.setuptools.package-data]
+# schema.sql is read at runtime to create tables, so it must travel with the
+# wheel. Missing it means the package installs cleanly and then fails on first
+# use, which is the worst time to discover it.
 arr_uploader = ["db/*.sql"]
 
 [tool.pytest.ini_options]

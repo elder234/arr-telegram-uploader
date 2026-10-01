@@ -31,7 +31,12 @@ jobs:
       - name: Install
         run: |
           python -m pip install --upgrade pip
+          # -e . installs the project itself. Without it the suite still passes,
+          # because the runner injects src/ into sys.path itself, and the CLI is
+          # not actually importable -- which is exactly how the package layout
+          # broke while the tests stayed green.
           pip install -r requirements.txt
+          pip install -e .
           pip install pytest
 
       - name: Test
@@ -41,7 +46,12 @@ jobs:
         run: python _devtools/run_tests.py
 
       - name: Import check
-        run: python -c "import arr_uploader.cli, arr_uploader.worker, arr_uploader.pipeline"
+        # No sys.path games here: this must pass through the installed package,
+        # the same way the container resolves it.
+        run: |
+          python -c "import arr_uploader.cli, arr_uploader.worker, arr_uploader.pipeline"
+          arr-uploader --help > /dev/null
+          echo "console script resolved"
 
       - name: Session-string guard
         # A leaked session string is full account access, so fail the build rather
