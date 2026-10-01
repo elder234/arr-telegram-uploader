@@ -82,6 +82,39 @@ def test_dockerfile_installs_the_project():
     )
 
 
+def test_dockerfile_can_build_tgcrypto():
+    """tgcrypto is a C extension with gaps in wheel coverage.
+
+    The first CI image build failed with "No such file or directory: 'gcc'", so
+    the base image needs a compiler for the dependency layer, and it must be a
+    compiler the image can actually remove afterwards.
+    """
+    dockerfile = (ROOT / "docker" / "Dockerfile").read_text(encoding="utf-8")
+    assert "build-essential" in dockerfile, (
+        "no compiler: pip cannot build tgcrypto from source"
+    )
+    # Installing into a venv lets the toolchain be purged without deleting the
+    # dependencies that landed in /usr/local.
+    assert "venv" in dockerfile, "dependencies should install into a venv"
+    assert "purge" in dockerfile, "the compiler must not ship in the final image"
+
+
+def test_dockerfile_installs_no_transcoder():
+    """Nothing transcodes: parts are streamed byte-for-byte.
+
+    Checked over the instructions only, so the explanatory comment that says we
+    do *not* need ffmpeg does not trip this.
+    """
+    dockerfile = (ROOT / "docker" / "Dockerfile").read_text(encoding="utf-8")
+    instructions = [
+        line.strip()
+        for line in dockerfile.splitlines()
+        if line.strip() and not line.strip().startswith("#")
+    ]
+    body = "\n".join(instructions)
+    assert "ffmpeg" not in body, "ffmpeg is not used and should not be installed"
+
+
 def test_gitignore_excludes_secrets():
     """A committed session string is full account access."""
     ignore = (ROOT / ".gitignore").read_text(encoding="utf-8")

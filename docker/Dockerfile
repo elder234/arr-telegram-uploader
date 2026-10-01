@@ -1,16 +1,26 @@
 FROM python:3.12-slim
 
-# ffmpeg is not needed: we stream raw parts, never transcode. Keeping the image
-# small also keeps the attack surface small.
+# No ffmpeg: parts are streamed byte-for-byte, never transcoded. Keeping the
+# image small also keeps the attack surface small.
 ENV PYTHONUNBUFFERED=1 \
     PYTHONDONTWRITEBYTECODE=1 \
     PIP_NO_CACHE_DIR=1
 
 WORKDIR /app
 
-# Dependencies first so the layer caches independently of source changes.
+# Install into a virtualenv under /opt so the compiler can be purged afterwards
+# without touching the system Python. pip installs into /usr/local by default,
+# which apt cannot clean selectively.
 COPY requirements.txt ./
-RUN pip install --no-cache-dir -r requirements.txt
+RUN python -m venv /opt/venv \
+    && apt-get update \
+    && apt-get install -y --no-install-recommends build-essential \
+    && rm -rf /var/lib/apt/lists/* \
+    && /opt/venv/bin/pip install --no-cache-dir -r requirements.txt \
+    && apt-get purge -y --auto-remove build-essential \
+    && rm -rf /var/lib/apt/lists/*
+
+ENV PATH="/opt/venv/bin:$PATH"
 
 COPY pyproject.toml ./
 COPY src/ ./src/
@@ -18,7 +28,8 @@ COPY config/ ./config/
 COPY scripts/ ./scripts/
 
 RUN pip install --no-cache-dir --no-deps -e . \
-    && mkdir -p /srv/arr/state/uploader/inbox
+    && mkdir -p /srv/arr/state/uploader/inbox \
+    && arr-uploader --help > /dev/null
 
 # The uploader needs write access to the media library to remove a movie folder
 # after a verified upload, and to its own state directory. Nothing else.
