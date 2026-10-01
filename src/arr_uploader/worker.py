@@ -194,6 +194,11 @@ class Worker:
 
     async def _background_loop(self) -> None:
         """Intake, reconciliation, and job expiry upkeep."""
+        heartbeat_every = max(
+            1, int(self.settings.uploader.heartbeat_seconds)
+        )
+        last_heartbeat = 0.0
+
         while not self.should_stop():
             try:
                 enqueued = self.inbox.poll()
@@ -218,7 +223,12 @@ class Worker:
                         },
                     )
 
-                self.store.log_event(None, "heartbeat", self.worker_id)
+                # Throttled: this is liveness evidence, not an event. Recording it
+                # every poll drowned the events table and made `status` useless.
+                now = time.time()
+                if now - last_heartbeat >= heartbeat_every:
+                    last_heartbeat = now
+                    self.store.log_event(None, "heartbeat", self.worker_id)
             except Exception as exc:  # noqa: BLE001 - intake must not kill the worker
                 LOG.error("background loop error", extra={"error": str(exc)})
 

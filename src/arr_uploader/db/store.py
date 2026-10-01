@@ -450,6 +450,17 @@ class Store:
     def recent_events(self, limit: int = 50) -> list[sqlite3.Row]:
         return self._query("SELECT * FROM events ORDER BY id DESC LIMIT ?", (limit,))
 
+    def last_event(self, event: str) -> sqlite3.Row | None:
+        """Most recent row for one event name, or None.
+
+        Backs the liveness line in `status`: how long since the worker last
+        proved it was alive.
+        """
+        rows = self._query(
+            "SELECT * FROM events WHERE event = ? ORDER BY id DESC LIMIT 1", (event,)
+        )
+        return rows[0] if rows else None
+
     def jobs_in_state(self, state: JobState | str, limit: int = 500) -> list[Job]:
         """Jobs in one state, oldest first.
 

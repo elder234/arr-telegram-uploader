@@ -11,6 +11,7 @@ import argparse
 import asyncio
 import json
 import sys
+from datetime import datetime, timezone
 from pathlib import Path
 
 from . import __version__
@@ -40,6 +41,27 @@ def _human_bytes(value: int) -> str:
             return f"{size:.1f} {unit}" if unit != "B" else f"{int(size)} B"
         size /= 1024
     return f"{size:.1f} TiB"
+
+
+def _age_seconds(ts: str) -> float | None:
+    """Seconds since a naive SQLite UTC timestamp, or None if unparseable."""
+    try:
+        when = datetime.strptime(ts, "%Y-%m-%d %H:%M:%S")
+    except (TypeError, ValueError):
+        return None
+    # SQLite datetime('now') is UTC; compare against UTC, not local time.
+    return (datetime.now(timezone.utc).replace(tzinfo=None) - when).total_seconds()
+
+
+def _human_ago(seconds: float) -> str:
+    seconds = max(0.0, seconds)
+    if seconds < 90:
+        return f"{int(seconds)}s ago"
+    if seconds < 5400:
+        return f"{int(seconds / 60)}m ago"
+    if seconds < 172800:
+        return f"{int(seconds / 3600)}h ago"
+    return f"{int(seconds / 86400)}d ago"
 
 
 def _render_job(job: Job, parts: list[Part]) -> str:
@@ -142,7 +164,14 @@ def cmd_status(args: argparse.Namespace) -> int:
     print()
     print("recent events")
     print("-" * 72)
-    events = store.recent_events(limit=args.limit)
+    # Heartbeats are liveness evidence and repeat every few minutes; left inline
+    # they crowd out the actual work. They are summarized as one line below.
+    events = [
+        row for row in store.recent_events(limit=args.limit * 4)
+        if row["event"] != "heartbeat"
+    ][: args.limit]
+    if args.all:
+        events = store.recent_events(limit=args.limit)
     if not events:
         print("  nothing yet")
     for row in events:
@@ -151,6 +180,23 @@ def cmd_status(args: argparse.Namespace) -> int:
             detail = detail[:57] + "..."
         job_ref = f"job={row['job_id']}" if row["job_id"] is not None else "-"
         print(f"  {row['ts']}  {row['level']:<7} {job_ref:<10} {row['event']}  {detail}")
+
+    # Liveness, stated plainly. A stale timestamp is the difference between
+    # "idle, waiting for work" and "wedged", which look identical in a log.
+    beat = store.last_event("heartbeat")
+    if beat is None:
+        print()
+        print("liveness     : no heartbeat recorded yet")
+    else:
+        age = _age_seconds(beat["ts"])
+        if age is None:
+            print()
+            print(f"liveness     : last heartbeat at {beat['ts']} (unparseable)")
+        else:
+            stale = age > max(600, settings.uploader.heartbeat_seconds * 2)
+            flag = "  <-- STALE, worker may be wedged" if stale else ""
+            print()
+            print(f"liveness     : last heartbeat {beat['ts']} ({_human_ago(age)}){flag}")
 
     store.close()
     return 0
@@ -376,6 +422,7 @@ def build_parser() -> argparse.ArgumentParser:
     st = sub.add_parser("status", help="show pipeline state: jobs, parts, torbox, recent events")
     st.add_argument("--json", action="store_true", help="machine-readable output (the old payload)")
     st.add_argument("--limit", type=int, default=10, help="max jobs and events to show (default 10)")
+    st.add_argument("--all", action="store_true", help="include liveness heartbeats in events")
     st.set_defaults(func=cmd_status)
     sub.add_parser("check", help="validate configuration").set_defaults(func=cmd_check)
     sub.add_parser("tier", help="probe Telegram Premium and the size ceiling").set_defaults(func=cmd_tier)

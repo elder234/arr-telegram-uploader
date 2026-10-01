@@ -210,7 +210,11 @@ It prints the Telegram tier, the resolved paths, whether TorBox intake is
 enabled, how many magnets are waiting, the journal's torrent count, every job
 with its size and part progress (`3/5 parts, 3 verified`), the last error on
 failed jobs, and recent events. Quiet logs are ambiguous between working,
-stalled and waiting — `status` distinguishes them.
+stalled and waiting — `status` distinguishes them, and the `liveness` line
+flags a stale heartbeat so a wedged worker is not mistaken for an idle one.
+
+`status --all` also lists the raw heartbeats (`heartbeat_seconds` in
+`[uploader]`, default 300).
 
 Inside Docker:
 
@@ -269,7 +273,7 @@ python _devtools/run_tests.py            # all
 python _devtools/run_tests.py partition  # one module
 ```
 
-299 tests. `pytest` is used when installed; `_devtools/` provides a small shim and
+307 tests. `pytest` is used when installed; `_devtools/` provides a small shim and
 runner so the suite also runs with no package index available.
 
 Coverage includes the negative cases that matter most: verification failure must

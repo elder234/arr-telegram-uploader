@@ -62,6 +62,11 @@ class UploaderConfig:
     backoff_base_seconds: int = 30
     backoff_cap_seconds: int = 3600
     drain_on_shutdown: bool = True
+    # How often a liveness heartbeat is recorded in the events table. Must stay
+    # far above poll_interval_seconds: one row per poll filled the table with
+    # ~17k identical heartbeats a day and buried every real event, so `status`
+    # showed nothing but noise.
+    heartbeat_seconds: int = 300
 
 
 @dataclass(slots=True)
