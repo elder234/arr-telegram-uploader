@@ -225,6 +225,9 @@ def cmd_fetch(args: argparse.Namespace) -> int:
         intake = TorboxIntake(
             settings.torbox,
             fetch_dir=settings.torbox.staging_dir or settings.paths.state_dir,
+            # Without this the fetched folder sits on disk forever: one-shot
+            # fetch has no claim loop behind it.
+            inbox_dir=settings.paths.inbox_dir,
         )
         fetched: list[str] = []
         ready_count = 0

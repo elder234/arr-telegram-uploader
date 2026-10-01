@@ -72,7 +72,9 @@ bypass_cache = false
 delete_after_fetch = false
 
 [deletion]
-enabled = true
+# Deletes local files, so it starts off. Turn it on once a real upload has
+# completed and verified end to end. The verified-delete gate still applies.
+enabled = false
 # Hard gate. Local files are only removed after every part is uploaded AND
 # size-verified. Anything suspicious goes to quarantine_dir instead of rmtree.
 verify_size_before_delete = true

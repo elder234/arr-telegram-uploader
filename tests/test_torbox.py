@@ -389,6 +389,10 @@ def test_poll_skips_error_states():
                 ]
             )
             intake = TorboxIntake(TorboxConfig(api_key="k"), fetch_dir=str(Path(d) / "f"))
+            # poll() only returns torrents this installation submitted, so the
+            # ids under test have to be journalled as ours first.
+            intake.journal.bind(1)
+            intake.journal.bind(2)
             return await intake.poll(http)
 
     ready = asyncio.run(run())

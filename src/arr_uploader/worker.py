@@ -101,6 +101,12 @@ class Worker:
                 self.webhook = None
 
         background = [asyncio.create_task(self._background_loop(), name="background")]
+        # Both halves of torbox config or neither; config.validate() enforces it,
+        # so an empty api_key here means intake is deliberately off.
+        if self.settings.torbox.api_key and self.settings.torbox.watch_dir:
+            background.append(asyncio.create_task(self._torbox_loop(), name="torbox-intake"))
+        else:
+            LOG.info("torbox intake disabled", extra={"reason": "api_key and watch_dir not both set"})
 
         try:
             await self._claim_loop()
@@ -145,6 +151,32 @@ class Worker:
             LOG.warning("tier probe skipped", extra={"error": str(exc)})
 
     # ------------------------------------------------------------------ loops
+
+    async def _torbox_loop(self) -> None:
+        """Run TorBox intake alongside the worker.
+
+        TorBox intake was previously reachable only from the one-shot ``fetch``
+        command, which meant the container never actually submitted or fetched
+        anything on its own. The handoff is the inbox file, so the claim loop
+        below picks the job up with no further plumbing.
+        """
+        import httpx
+
+        from .intake.torbox_intake import TorboxIntake
+
+        intake = TorboxIntake(
+            self.settings.torbox,
+            fetch_dir=self.settings.torbox.staging_dir or self.settings.paths.state_dir,
+            inbox_dir=self.settings.paths.inbox_dir,
+        )
+        timeout = httpx.Timeout(self.settings.torbox.timeout_seconds)
+        try:
+            async with httpx.AsyncClient(timeout=timeout) as http:
+                await intake.run_forever(http, self.should_stop)
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:  # noqa: BLE001 - bad key must not kill uploads
+            LOG.error("torbox intake stopped", extra={"error": str(exc)})
 
     async def _background_loop(self) -> None:
         """Intake, reconciliation, and job expiry upkeep."""

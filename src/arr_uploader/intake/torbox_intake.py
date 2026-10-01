@@ -13,16 +13,23 @@ Two design points worth stating:
   writes into ``fetch_dir``; only the pipeline's existing verified-delete gate
   removes data, and only from ``media_root``. A half-written download is never
   handed on.
-* A magnet is recorded before submission. If TorBox accepts it and we crash
-  before writing the id, the next start would create a duplicate torrent.
+* A magnet is journalled before submission. If TorBox accepts it and we crash
+  before writing the id, the next start would create a duplicate torrent, so the
+  journal records the intent first and ``checkcached`` covers the gap.
+* **Only torrents this installation submitted are ever fetched.** ``mylist``
+  returns the whole account, and a ready torrent we never asked for is the
+  user's own library, not our job. An empty journal therefore fetches nothing,
+  which is the safe direction.
 """
 
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import os
 import re
+import time
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable
@@ -43,6 +50,89 @@ LOG = logging.getLogger(__name__)
 # A .torrent file is bencode; we only need its name, and parsing that from raw
 # bytes avoids a dependency. Good enough for a staging filename.
 _NAME_RE = re.compile(rb"\d+:name(\d+):")
+
+
+class Journal:
+    """Durable record of which torrent ids we own.
+
+    This exists because ``mylist`` returns the entire account. Without a
+    persistent list of ids we submitted, the poll loop would happily re-download
+    the user's whole library on every cycle, and a restart would forget every
+    id it had already handled.
+
+    Writes are atomic (temp file + replace) because a truncated journal is worse
+    than no journal: it would silently orphan torrents and re-fetch them.
+    """
+
+    SUBMITTED = "submitted"
+    FETCHED = "fetched"
+
+    def __init__(self, path: str | os.PathLike[str]) -> None:
+        self.path = Path(path)
+        self.entries: dict[str, dict[str, Any]] = {}
+        self._load()
+
+    def _load(self) -> None:
+        try:
+            raw = self.path.read_text(encoding="utf-8")
+        except FileNotFoundError:
+            return
+        except OSError as exc:
+            LOG.error("could not read torbox journal", extra={"path": str(self.path), "error": str(exc)})
+            return
+        try:
+            data = json.loads(raw)
+        except json.JSONDecodeError:
+            LOG.error("torbox journal is corrupt, starting empty", extra={"path": str(self.path)})
+            return
+        entries = data.get("torrents") if isinstance(data, dict) else None
+        if isinstance(entries, dict):
+            self.entries = {str(k): dict(v) for k, v in entries.items() if isinstance(v, dict)}
+
+    def _flush(self) -> None:
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+        tmp = self.path.with_suffix(".tmp")
+        payload = json.dumps({"version": 1, "torrents": self.entries}, indent=2, sort_keys=True)
+        tmp.write_text(payload, encoding="utf-8")
+        tmp.replace(self.path)
+
+    def record_intent(self, info_hash: str, magnet: str, source: str) -> None:
+        """Note the magnet before the API call, so a crash cannot duplicate it."""
+        if not info_hash:
+            return
+        self.entries[f"hash:{info_hash}"] = {
+            "info_hash": info_hash,
+            "magnet": magnet,
+            "source": source,
+            "created": time.time(),
+        }
+        self._flush()
+
+    def bind(self, torrent_id: int, **fields: Any) -> None:
+        entry = {"state": self.SUBMITTED, "created": time.time()}
+        entry.update(fields)
+        self.entries[str(torrent_id)] = entry
+        self._flush()
+
+    def get(self, torrent_id: int) -> dict[str, Any] | None:
+        return self.entries.get(str(torrent_id))
+
+    def mark_fetched(self, torrent_id: int) -> None:
+        entry = self.entries.setdefault(str(torrent_id), {})
+        entry["state"] = self.FETCHED
+        entry["fetched_at"] = time.time()
+        self._flush()
+
+    def unfetched_ids(self) -> set[int]:
+        """Ids we submitted and have not yet handed to the pipeline."""
+        return {
+            int(key)
+            for key, value in self.entries.items()
+            if key.isdigit() and value.get("state") != self.FETCHED
+        }
+
+    def submitted_count(self) -> int:
+        return len(self.unfetched_ids())
 
 
 @dataclass(slots=True)
@@ -91,15 +181,21 @@ class TorboxIntake:
         fetch_dir: str,
         client: TorboxClient | None = None,
         on_movie: Callable[[Path], Any] | None = None,
+        inbox_dir: str = "",
+        journal: Journal | None = None,
     ) -> None:
         self.config = config
         self.fetch_dir = Path(fetch_dir)
         self.client = client or TorboxClient(config)
         # Called with the completed folder. The pipeline consumes this.
         self._on_movie = on_movie
+        # Where completed folders are announced. Empty means "do not hand off",
+        # which is only correct for a manual fetch with no pipeline running.
+        self.inbox_dir = Path(inbox_dir) if inbox_dir else None
         self.stats = IntakeStats()
         # hash -> PendingMagnet. Keeps a restart from re-submitting.
         self._pending: dict[str, PendingMagnet] = {}
+        self.journal = journal if journal is not None else Journal(self.fetch_dir / ".torbox-journal.json")
 
     # ------------------------------------------------------------- discovery
 
@@ -190,12 +286,24 @@ class TorboxIntake:
                 files = {"file": (path.name, fh, "application/x-bittorrent")}
             magnet_value = ""
 
+        # Record before the call, not after. If TorBox accepts the create and we
+        # die before writing the id, the next start re-reads this intent and
+        # checkcached finds the torrent instead of creating a second one.
+        self.journal.record_intent(info_hash, magnet, str(path))
+
         if magnet:
             torrent_id = await self.client.create_magnet(http, magnet)
         else:
             torrent_id = await self.client.create_torrent_file(http, files)
 
         self.stats.submitted += 1
+        self.journal.bind(
+            torrent_id,
+            info_hash=info_hash,
+            magnet=magnet,
+            source=str(path),
+            name=path.stem,
+        )
         self._pending[info_hash or str(torrent_id)] = PendingMagnet(
             info_hash=info_hash,
             magnet=magnet,
@@ -218,7 +326,18 @@ class TorboxIntake:
     # ------------------------------------------------------------------ poll
 
     async def poll(self, http: Any) -> list[Torrent]:
-        """Return torrents that have become ready to fetch."""
+        """Return torrents *we submitted* that have become ready to fetch.
+
+        ``mylist`` returns every torrent on the account, including the user's
+        own library. Fetching those would re-download unrelated content on
+        every cycle, so anything not in the journal is ignored -- even when it
+        is complete and ready.
+        """
+        owned = self.journal.unfetched_ids()
+        if not owned:
+            LOG.debug("no owned torrents awaiting fetch")
+            return []
+
         try:
             torrents = await self.client.list_torrents(http)
         except TorboxError as exc:
@@ -226,7 +345,11 @@ class TorboxIntake:
             return []
 
         ready: list[Torrent] = []
+        foreign = 0
         for torrent in torrents:
+            if torrent.id not in owned:
+                foreign += 1
+                continue
             if torrent.state is TorrentState.ERROR:
                 LOG.warning(
                     "torbox torrent in error state",
@@ -235,6 +358,11 @@ class TorboxIntake:
                 continue
             if torrent.ready:
                 ready.append(torrent)
+        if foreign:
+            LOG.info(
+                "ignored torrents this installation did not submit",
+                extra={"count": foreign, "owned": len(owned)},
+            )
         return ready
 
     # ----------------------------------------------------------------- fetch
@@ -245,7 +373,13 @@ class TorboxIntake:
         Writes to ``.part`` and renames on completion, so a crash never leaves a
         truncated file that looks finished to the pipeline.
         """
-        files = torrent.video_files or torrent.files
+        video = torrent.video_files
+        subs = [f for f in torrent.files if f.is_subtitle]
+        # Subtitles are sidecars the pipeline uploads next to the video, so they
+        # have to be fetched too. Falling back to *all* files when there is no
+        # video keeps an audio-only or unknown-extension release from silently
+        # producing nothing.
+        files = video + subs if video else torrent.files
         if not files:
             LOG.warning("torbox torrent has no files", extra={"id": torrent.id, "name": torrent.name})
             return None
@@ -282,7 +416,37 @@ class TorboxIntake:
             "torbox fetch complete",
             extra={"id": torrent.id, "name": torrent.name, "dir": str(target_dir)},
         )
+        await self.handoff(target_dir, torrent)
         return target_dir
+
+    async def handoff(self, folder: Path, torrent: Torrent) -> None:
+        """Announce a completed folder to the upload pipeline.
+
+        Writes the same JSON the Radarr webhook and Custom Script use, into the
+        same inbox, so there is exactly one path into the store. Written to a
+        temp file and renamed, so the watcher never reads a partial payload.
+        """
+        if self._on_movie is not None:
+            await self._maybe_await(self._on_movie(folder))
+        if self.inbox_dir is None:
+            LOG.warning(
+                "fetched folder has no inbox configured, nothing will upload it",
+                extra={"dir": str(folder)},
+            )
+            return
+
+        self.inbox_dir.mkdir(parents=True, exist_ok=True)
+        payload = {
+            "folderPath": str(folder),
+            "title": torrent.name,
+            "source": "torbox",
+            "torboxId": torrent.id,
+        }
+        target = self.inbox_dir / f"torbox-{torrent.id}-{abs(hash(str(folder))) % 10**8}.json"
+        tmp = target.with_suffix(".json.tmp")
+        tmp.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+        tmp.replace(target)
+        LOG.info("handed off to pipeline", extra={"dir": str(folder), "inbox": target.name})
 
     async def _download_file(
         self,
@@ -368,16 +532,23 @@ class TorboxIntake:
                     folder = await self.fetch(http, torrent)
                     if folder is None:
                         continue
-                    if self._on_movie is not None:
-                        await self._maybe_await(self._on_movie(folder))
+                    # Marked only after the fetch succeeded and the folder was
+                    # announced. A crash before this re-fetches, which is
+                    # recoverable; marking first would strand the torrent with
+                    # no files on disk and nothing to upload.
+                    self.journal.mark_fetched(torrent.id)
                     if self.config.delete_after_fetch:
+                        # Only ever after the bytes are on disk and handed off.
                         await self.client.delete_torrent(http, torrent.id)
             except asyncio.CancelledError:
                 raise
             except Exception:  # noqa: BLE001 - the loop must survive anything
                 LOG.exception("torbox intake cycle failed")
 
-            await asyncio.sleep(self.config.poll_interval_seconds)
+            try:
+                await asyncio.wait_for(asyncio.sleep(self.config.poll_interval_seconds), timeout=self.config.poll_interval_seconds)
+            except asyncio.TimeoutError:
+                pass
 
     @staticmethod
     async def _maybe_await(value: Any) -> Any:

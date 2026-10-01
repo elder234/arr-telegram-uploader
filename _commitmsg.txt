@@ -1,0 +1,51 @@
+Wire TorBox intake into the worker, and stop it hijacking your account
+
+The previous commit shipped intake that nothing ran. `arr-uploader worker`
+imported InboxWatcher and Reconciler but never TorboxIntake, so the container
+submitted nothing and fetched nothing on its own: the only way to trigger it
+was the one-shot `fetch` command, which fetched files to disk and then exited,
+leaving them there with nothing downstream to pick them up. The README claimed
+"drop a magnet and it uploads" and that was not true. It is now.
+
+Three things follow from running it unattended:
+
+**Only torrents we submitted are ever fetched.** `mylist` returns the entire
+account, so the poll loop was about to re-download the user's own library on
+every cycle -- and keep doing it forever. Ownership is now recorded in a journal
+at fetch_dir/.torbox-journal.json and anything not in it is skipped with a count
+logged. An empty journal fetches nothing, which is the safe direction: you get
+no downloads instead of someone else's.
+
+**The journal is written before the API call, not after.** If TorBox accepts a
+create and the process dies before the id is stored, the next start would create
+a duplicate torrent. Intent is recorded first, and `checkcached` catches the gap
+in the rare case the crash lands between the response and the write. Writes go
+through a temp file and rename, because a truncated journal silently orphans
+torrents and re-fetches them.
+
+**mark_fetched happens only after the fetch and the handoff.** Marking first
+would strand a torrent with no bytes on disk and nothing to upload. The
+sequence is download -> verify sizes -> announce -> mark, so a crash re-fetches
+instead of losing the release.
+
+Handoff reuses the existing Radarr inbox rather than inventing a second path
+into the store: TorBox writes the same JSON the webhook and Custom Script write,
+temp-then-rename so the watcher never reads a partial payload. That is why the
+claim loop needs no new code. The CLI's one-shot `fetch` gets the inbox too,
+which it previously lacked entirely.
+
+Also in here:
+- Subtitles are now fetched alongside the video. `video_files or files` meant a
+  release with both dropped every .srt/.ass silently, which the pipeline would
+  then have had nothing to upload next to the video.
+- deletion.enabled now ships false. An irreversible default should not be on.
+- The intake loop's sleep is interruptible, matching the worker's, so a
+  container stop no longer waits out a 60s poll.
+
+tests/test_torbox_ownership.py is the new coverage, and the point of it is the
+first test: an unsubmitted ready torrent must come back empty. test_poll_skips_
+error_states needed its ids journalled, since it was relying on the old
+fetch-everything behaviour.
+
+280 tests pass. Still no live TorBox traffic, so the journal and handoff are
+proven against fakes rather than real responses.
